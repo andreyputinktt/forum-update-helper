@@ -64,6 +64,7 @@ OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casef
     "no",
     "off",
 }
+BOT_TO_BOT_MESSAGE_PAUSE_SECONDS = float(os.getenv("BOT_TO_BOT_MESSAGE_PAUSE_SECONDS", "2"))
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -74,10 +75,14 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("forum_update_helper")
 
 _openai = OpenAI() if os.getenv("OPENAI_API_KEY") else None
+_message_timing: dict[str, dict[str, Any]] = {}
+_message_locks: dict[str, asyncio.Lock] = {}
 
 BUSINESS_CLUBS = ("Атланты", "Эквиум", "К1", "Терра", "Сколково", "Другое")
-METHODOLOGIES = ("YPO", "Классическая")
-DEFAULT_METHODOLOGY = "YPO"
+METHODOLOGY_CLASSIC = "Классическая (YPO)"
+METHODOLOGY_STRATEGY = "С личной стратегией (X-Competence)"
+METHODOLOGIES = (METHODOLOGY_CLASSIC, METHODOLOGY_STRATEGY)
+DEFAULT_METHODOLOGY = METHODOLOGY_CLASSIC
 ONBOARDING_TOTAL_STEPS = 7
 FORUM_GUIDE_DIR = BASE_DIR / "docs" / "forum-guide"
 COMMON_GUIDE_PATH = FORUM_GUIDE_DIR / "forum-common-guide.md"
@@ -368,6 +373,28 @@ def clip(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def mark_user_activity(chat_id: int | str) -> None:
+    state = _message_timing.setdefault(str(chat_id), {})
+    state["last_actor"] = "user"
+
+
+async def spaced_bot_send(chat_id: int | str, send_call: Any) -> Any:
+    key = str(chat_id)
+    lock = _message_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        state = _message_timing.setdefault(key, {})
+        if state.get("last_actor") == "bot":
+            loop = asyncio.get_running_loop()
+            elapsed = loop.time() - float(state.get("last_bot_at") or 0)
+            pause = BOT_TO_BOT_MESSAGE_PAUSE_SECONDS - elapsed
+            if pause > 0:
+                await asyncio.sleep(pause)
+        result = await send_call()
+        state["last_actor"] = "bot"
+        state["last_bot_at"] = asyncio.get_running_loop().time()
+        return result
+
+
 def parse_time(value: str) -> time:
     hour, minute = value.split(":", 1)
     return time(int(hour), int(minute), tzinfo=TZ)
@@ -377,9 +404,21 @@ def parse_forum_date(value: str, base: date | None = None) -> date | None:
     value = value.strip()
     if not value:
         return None
+    base_date = base or datetime.now(TZ).date()
+    short_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.?", value)
+    if short_match:
+        day = int(short_match.group(1))
+        month = int(short_match.group(2))
+        try:
+            parsed = date(base_date.year, month, day)
+        except ValueError:
+            return None
+        if parsed < base_date:
+            parsed = date(base_date.year + 1, month, day)
+        return parsed
     settings = {
         "PREFER_DATES_FROM": "future",
-        "RELATIVE_BASE": datetime.combine(base or datetime.now(TZ).date(), time(12, 0), tzinfo=TZ),
+        "RELATIVE_BASE": datetime.combine(base_date, time(12, 0), tzinfo=TZ),
         "RETURN_AS_TIMEZONE_AWARE": False,
     }
     parsed = dateparser.parse(value, languages=["ru", "en"], settings=settings)
@@ -400,6 +439,17 @@ def default_forum_date() -> date:
     return datetime.now(TZ).date() + timedelta(days=30)
 
 
+def normalize_username(value: str) -> str:
+    return value.strip().removeprefix("@").casefold()
+
+
+def normalize_report_recipient(value: str) -> str:
+    username = normalize_username(value)
+    if not re.fullmatch(r"[a-z0-9_]{5,32}", username):
+        return ""
+    return f"@{username}"
+
+
 def is_profile_complete(user: dict[str, Any]) -> bool:
     return all(
         user.get(field)
@@ -407,21 +457,35 @@ def is_profile_complete(user: dict[str, Any]) -> bool:
     ) and user.get("keep_files") is not None
 
 
+def normalize_methodology(value: Any) -> str | None:
+    methodology = str(value or "").strip()
+    if not methodology:
+        return None
+    if methodology in METHODOLOGIES:
+        return methodology
+    folded = methodology.casefold()
+    if folded in {"ypo", "классическая", "classic", "классика"}:
+        return METHODOLOGY_CLASSIC
+    if "x-competence" in folded or "x competence" in folded or "личной стратег" in folded:
+        return METHODOLOGY_STRATEGY
+    return None
+
+
 def methodology_for_user(user: dict[str, Any]) -> str:
-    methodology = (user.get("methodology") or DEFAULT_METHODOLOGY).strip()
-    return methodology if methodology in METHODOLOGIES else DEFAULT_METHODOLOGY
+    return normalize_methodology(user.get("methodology")) or DEFAULT_METHODOLOGY
 
 
 def update_questions_for_user(user: dict[str, Any]) -> list[Question]:
-    if methodology_for_user(user) == "Классическая":
+    if methodology_for_user(user) == METHODOLOGY_CLASSIC:
         return CLASSIC_UPDATE_QUESTIONS
     return UPDATE_QUESTIONS
 
 
 def load_forum_guide_context(methodology: str | None = None, max_chars: int = 18000) -> str:
     parts: list[str] = []
+    normalized = normalize_methodology(methodology)
     for path in (COMMON_GUIDE_PATH, CLASSIC_GUIDE_PATH):
-        if path == CLASSIC_GUIDE_PATH and methodology and methodology != "Классическая":
+        if path == CLASSIC_GUIDE_PATH and normalized and normalized != METHODOLOGY_CLASSIC:
             continue
         if path.exists():
             parts.append(path.read_text(encoding="utf-8").strip())
@@ -452,7 +516,7 @@ class Store:
                 business_club TEXT,
                 full_name TEXT,
                 forum_group TEXT,
-                methodology TEXT DEFAULT 'YPO',
+                methodology TEXT DEFAULT 'Классическая (YPO)',
                 community_chat TEXT,
                 keep_files INTEGER,
                 state TEXT,
@@ -482,7 +546,7 @@ class Store:
             );
             """
         )
-        self._ensure_column("users", "methodology", "TEXT DEFAULT 'YPO'")
+        self._ensure_column("users", "methodology", "TEXT DEFAULT 'Классическая (YPO)'")
         self._ensure_column("users", "diary_enabled", "INTEGER DEFAULT 0")
         self._ensure_column("users", "diary_feedback_prompt", "TEXT")
         self.conn.commit()
@@ -496,6 +560,7 @@ class Store:
         tg_user = update.effective_user
         chat = update.effective_chat
         assert tg_user is not None and chat is not None
+        mark_user_activity(chat.id)
         existing = self.get_user(tg_user.id)
         timestamp = now_iso()
         if existing is None:
@@ -532,6 +597,16 @@ class Store:
         row = self.conn.execute(
             "SELECT * FROM users WHERE telegram_user_id = ?",
             (telegram_user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        key = normalize_username(username)
+        if not key:
+            return None
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE lower(username) = ?",
+            (key,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -662,8 +737,6 @@ def business_club_keyboard(prefix: str = "club") -> InlineKeyboardMarkup:
 
 def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(value, callback_data=f"{prefix}:{value}")] for value in METHODOLOGIES]
-    if prefix == "methodology":
-        buttons.append([InlineKeyboardButton("Пропустить", callback_data="skip:methodology")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -691,11 +764,15 @@ async def safe_send(
     **kwargs: Any,
 ) -> bool:
     try:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=clip(text),
-            parse_mode=kwargs.pop("parse_mode", ParseMode.HTML),
-            **kwargs,
+        parse_mode = kwargs.pop("parse_mode", ParseMode.HTML)
+        await spaced_bot_send(
+            chat_id,
+            lambda: context.bot.send_message(
+                chat_id=chat_id,
+                text=clip(text),
+                parse_mode=parse_mode,
+                **kwargs,
+            ),
         )
         return True
     except TelegramError as exc:
@@ -706,10 +783,15 @@ async def safe_send(
 async def reply(update: Update, text: str, **kwargs: Any) -> None:
     if update.effective_message is None:
         return
-    await update.effective_message.reply_text(
-        clip(text),
-        parse_mode=kwargs.pop("parse_mode", ParseMode.HTML),
-        **kwargs,
+    chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
+    parse_mode = kwargs.pop("parse_mode", ParseMode.HTML)
+    await spaced_bot_send(
+        chat_id,
+        lambda: update.effective_message.reply_text(
+            clip(text),
+            parse_mode=parse_mode,
+            **kwargs,
+        ),
     )
 
 
@@ -735,16 +817,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> None:
     text = (
         "<b>ForumUpdateHelperBot</b>\n\n"
-        "Я помогу подготовиться к форуму в методике YPO/X-Competence или "
-        "классического Forum Update: проведу по вопросам апдейта, напомню "
-        "о дате форума, после встречи соберу здоровье группы и раз в три "
-        "месяца предложу личную стратегическую сессию вне города.\n\n"
+        "Я помогу подготовиться к форуму в методике «Классическая (YPO)» "
+        "или «С личной стратегией (X-Competence)»: проведу по вопросам "
+        "апдейта, напомню о дате форума, после встречи соберу здоровье "
+        "группы и раз в три месяца предложу личную стратегическую сессию "
+        "вне города.\n\n"
         "Ещё я могу помочь вести дневник, чтобы апдейт получился глубже, "
         "а жизнь — более осознанной, насыщенной и особенной.\n\n"
         "Можно отвечать текстом или голосом. Голос я транскрибирую и покажу текст."
     )
     await reply(update, text)
-    await asyncio.sleep(3)
     store.update_user(user["telegram_user_id"], state="onboarding:business_club")
     await reply(
         update,
@@ -781,7 +863,8 @@ async def send_about(update: Update) -> None:
     await reply(
         update,
         "<b>О боте</b>\n\n"
-        "Я готовлю форумный апдейт в форматах YPO/X-Competence и «Классическая»: "
+        "Я готовлю форумный апдейт в форматах «Классическая (YPO)» и "
+        "«С личной стратегией (X-Competence)»: "
         "провожу по вопросам, собираю файл и помогаю свериться со справочником форума.\n\n"
         "Что умею:\n"
         "• спрашивать дату следующего форума при старте;\n"
@@ -921,7 +1004,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_profile_cabinet(update, updated)
     elif data == "profile:clear_community":
         updated = store.update_user(user["telegram_user_id"], community_chat="", state=None)
-        await reply(update, "Telegram community очищен. Отчёты останутся в личном чате.")
+        await reply(update, "Получатель отчётов очищен. Отчёты останутся в личном чате.")
         await show_profile_cabinet(update, updated)
     elif data == "menu:about":
         await send_about(update)
@@ -1074,22 +1157,36 @@ async def handle_onboarding_text(
         return
 
     if state == "onboarding:methodology":
-        methodology = text.strip()
-        if methodology not in METHODOLOGIES:
-            methodology = DEFAULT_METHODOLOGY
+        methodology = normalize_methodology(text)
+        if methodology is None:
+            await reply(
+                update,
+                "Методику нужно выбрать, этот шаг нельзя пропустить.\n\n"
+                "Выбери один из двух вариантов:",
+                reply_markup=methodology_keyboard(),
+            )
+            return
         store.update_user(user["telegram_user_id"], methodology=methodology, state="onboarding:community_chat")
         await reply(
             update,
             f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Куда отправлять отчёты о здоровье форум-группы?\n\n"
-            "Пришли <code>@username</code> чата/канала или numeric chat_id. "
-            "Бот должен быть добавлен туда и иметь право писать.",
+            "Кому отправлять статистику о здоровье форум-группы?\n\n"
+            "Пришли Telegram username пользователя, например <code>@utandr</code>. "
+            "Бот сможет отправить ему отчёт, только если этот пользователь уже запускал бота.",
             reply_markup=skip_keyboard("community_chat"),
         )
         return
 
     if state == "onboarding:community_chat":
-        store.update_user(user["telegram_user_id"], community_chat=text[:180], state="onboarding:keep_files")
+        recipient = normalize_report_recipient(text)
+        if not recipient:
+            await reply(
+                update,
+                "Пришли Telegram username в формате <code>@username</code> или нажми «Пропустить».",
+                reply_markup=skip_keyboard("community_chat"),
+            )
+            return
+        store.update_user(user["telegram_user_id"], community_chat=recipient, state="onboarding:keep_files")
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -1102,7 +1199,8 @@ async def handle_onboarding_text(
         await reply(
             update,
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
+            "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n\n"
+            "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
             reply_markup=keyboard,
         )
         return
@@ -1154,6 +1252,14 @@ async def handle_onboarding_skip(
         await reply(update, "Эта кнопка уже неактуальна. Продолжаем текущий шаг.")
         return
 
+    if field == "methodology":
+        await reply(
+            update,
+            "Методику нужно выбрать, этот шаг нельзя пропустить.",
+            reply_markup=methodology_keyboard(),
+        )
+        return
+
     if field == "business_club":
         user = store.update_user(user["telegram_user_id"], business_club="Другое", state="onboarding:full_name")
         await reply(
@@ -1196,21 +1302,6 @@ async def handle_onboarding_skip(
         )
         return
 
-    if field == "methodology":
-        user = store.update_user(
-            user["telegram_user_id"],
-            methodology=DEFAULT_METHODOLOGY,
-            state="onboarding:community_chat",
-        )
-        await reply(
-            update,
-            f"Ок, поставил методику <b>{DEFAULT_METHODOLOGY}</b>.\n\n"
-            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Куда отправлять отчёты о здоровье форум-группы?",
-            reply_markup=skip_keyboard("community_chat"),
-        )
-        return
-
     if field == "community_chat":
         user = store.update_user(user["telegram_user_id"], community_chat="", state="onboarding:keep_files")
         keyboard = InlineKeyboardMarkup(
@@ -1226,7 +1317,8 @@ async def handle_onboarding_skip(
             update,
             "Ок, отчёты о здоровье пока будут оставаться в личном чате.\n\n"
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
+            "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n\n"
+            "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
             reply_markup=keyboard,
         )
         return
@@ -1295,19 +1387,23 @@ async def handle_next_forum_date(
 
 
 def profile_cabinet_text(user: dict[str, Any]) -> str:
-    community = (user.get("community_chat") or "").strip()
+    report_recipient = (user.get("community_chat") or "").strip()
     methodology = methodology_for_user(user)
-    keep_files = "сохранять" if user.get("keep_files") else "удалять после обработки"
+    keep_files = (
+        "сохранять апдейты и документы; голосовые удалять сразу"
+        if user.get("keep_files")
+        else "удалять после обработки"
+    )
     diary = "включён" if user.get("diary_enabled") else "выключен"
     forum_date = user.get("next_forum_date") or "не указана"
-    community_text = community or "не указан — отчёты остаются в личном чате"
+    recipient_text = report_recipient or "не указан — отчёты остаются в личном чате"
     return (
         "<b>Личный кабинет</b>\n\n"
         f"Бизнес-клуб: <b>{esc(user.get('business_club') or 'не указан')}</b>\n"
         f"ФИ: <b>{esc(user.get('full_name') or 'не указано')}</b>\n"
         f"Форум-группа: <b>{esc(user.get('forum_group') or 'не указана')}</b>\n"
         f"Методика: <b>{esc(methodology)}</b>\n"
-        f"Telegram community: <b>{esc(community_text)}</b>\n"
+        f"Получатель отчётов: <b>{esc(recipient_text)}</b>\n"
         f"Файлы: <b>{esc(keep_files)}</b>\n"
         f"Следующий форум: <b>{esc(forum_date)}</b>\n"
         f"Режим дневника: <b>{esc(diary)}</b>\n\n"
@@ -1326,7 +1422,7 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Форум-группа", callback_data="profile:edit:forum_group"),
                 InlineKeyboardButton("Методика", callback_data="profile:edit:methodology"),
             ],
-            [InlineKeyboardButton("Community", callback_data="profile:edit:community_chat")],
+            [InlineKeyboardButton("Получатель отчётов", callback_data="profile:edit:community_chat")],
             [
                 InlineKeyboardButton("Файлы", callback_data="profile:edit:keep_files"),
                 InlineKeyboardButton("Дата форума", callback_data="profile:edit:next_forum_date"),
@@ -1370,7 +1466,8 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Очистить", callback_data="profile:clear_community")]])
         await reply(
             update,
-            "Пришли <code>@username</code> Telegram community или numeric chat_id. "
+            "Пришли Telegram username пользователя, например <code>@utandr</code>. "
+            "Бот отправит ему отчёт, только если этот пользователь уже запускал бота. "
             "Если очистить поле, отчёты останутся в личном чате.",
             reply_markup=keyboard,
         )
@@ -1402,7 +1499,11 @@ async def handle_profile_edit_text(update: Update, user: dict[str, Any], text: s
     elif field == "forum_group":
         updated = store.update_user(user["telegram_user_id"], forum_group=value[:160], state=None)
     elif field == "community_chat":
-        updated = store.update_user(user["telegram_user_id"], community_chat=value[:180], state=None)
+        recipient = normalize_report_recipient(value)
+        if not recipient:
+            await reply(update, "Пришли Telegram username в формате <code>@username</code> или нажми «Очистить».")
+            return
+        updated = store.update_user(user["telegram_user_id"], community_chat=recipient, state=None)
     elif field == "next_forum_date":
         forum_date = parse_forum_date(value)
         if forum_date is None:
@@ -1642,7 +1743,7 @@ async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
         update,
         "<b>Health check форум-группы</b>\n\n"
         "Отвечай честно и конкретно. В конце я соберу отчёт и попробую отправить "
-        "его в указанный Telegram community.",
+        "его указанному Telegram-пользователю, если он уже запускал бота.",
         reply_markup=cancel_keyboard(),
     )
     await ask_current_question(update, user, HEALTH_QUESTIONS)
@@ -1849,13 +1950,16 @@ async def finish_update_flow(
     filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
     path = user_dir / filename
     path.write_text(content, encoding="utf-8")
-    if update.effective_message:
+    if update.effective_message and update.effective_chat:
         with path.open("rb") as fh:
-            await update.effective_message.reply_document(
-                document=fh,
-                filename=filename,
-                caption=f"Готово: форумный апдейт {methodology_for_user(user)}.",
-                reply_markup=MAIN_KEYBOARD,
+            await spaced_bot_send(
+                update.effective_chat.id,
+                lambda: update.effective_message.reply_document(
+                    document=fh,
+                    filename=filename,
+                    caption=f"Готово: форумный апдейт {methodology_for_user(user)}.",
+                    reply_markup=MAIN_KEYBOARD,
+                ),
             )
     if not user.get("keep_files"):
         path.unlink(missing_ok=True)
@@ -1875,6 +1979,10 @@ def build_health_report(user: dict[str, Any], answers: dict[str, str]) -> str:
     return "\n".join(lines).strip()
 
 
+def resolve_report_recipient(username: str) -> dict[str, Any] | None:
+    return store.get_user_by_username(username)
+
+
 async def finish_health_flow(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1883,16 +1991,25 @@ async def finish_health_flow(
 ) -> None:
     report = build_health_report(user, answers)
     await reply(update, report, reply_markup=MAIN_KEYBOARD)
-    community_chat = (user.get("community_chat") or "").strip()
-    if community_chat:
-        ok = await safe_send(context, community_chat, report)
+    report_recipient = (user.get("community_chat") or "").strip()
+    if report_recipient:
+        recipient = resolve_report_recipient(report_recipient)
+        if recipient is None:
+            await reply(
+                update,
+                f"Не нашёл пользователя <b>{esc(report_recipient)}</b> среди тех, кто уже запускал бота. "
+                "Отчёт выше можно переслать вручную или попросить пользователя сначала отправить /start боту.",
+            )
+            await ask_next_forum_date(update, user)
+            return
+        ok = await safe_send(context, int(recipient["chat_id"]), report)
         if ok:
-            await reply(update, f"Отправил отчёт в {esc(community_chat)}.")
+            await reply(update, f"Отправил отчёт пользователю <b>@{esc(recipient.get('username'))}</b>.")
         else:
             await reply(
                 update,
-                "Не смог отправить отчёт в community chat. Проверь, что бот добавлен в чат/канал "
-                "и имеет право писать. Отчёт выше можно переслать вручную.",
+                "Не смог отправить отчёт этому пользователю. Возможно, он остановил бота. "
+                "Отчёт выше можно переслать вручную.",
             )
     await ask_next_forum_date(update, user)
 
@@ -1946,14 +2063,9 @@ async def handle_voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TY
     if suffix in {"", ".oga", ".opus"}:
         suffix = ".ogg"
 
-    target_dir = UPLOADS_DIR / str(user["telegram_user_id"])
-    target_dir.mkdir(parents=True, exist_ok=True)
-    if user.get("keep_files"):
-        audio_path = target_dir / f"{datetime.now(TZ).strftime('%Y%m%d-%H%M%S')}{suffix}"
-    else:
-        tmp = tempfile.NamedTemporaryFile(prefix="forum-audio-", suffix=suffix, delete=False)
-        tmp.close()
-        audio_path = Path(tmp.name)
+    tmp = tempfile.NamedTemporaryFile(prefix="forum-audio-", suffix=suffix, delete=False)
+    tmp.close()
+    audio_path = Path(tmp.name)
 
     try:
         await tg_file.download_to_drive(custom_path=str(audio_path))
@@ -1968,8 +2080,7 @@ async def handle_voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     finally:
-        if not user.get("keep_files"):
-            audio_path.unlink(missing_ok=True)
+        audio_path.unlink(missing_ok=True)
 
     await reply(update, f"<b>Транскрипт</b>\n{esc(transcript)}")
     fresh_user = store.get_user(user["telegram_user_id"]) or user

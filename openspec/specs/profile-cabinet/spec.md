@@ -5,8 +5,8 @@ TBD - created by archiving change add-onboarding-skip-and-profile-cabinet. Updat
 ## Requirements
 ### Requirement: Personal cabinet
 The bot SHALL provide a Telegram-native personal cabinet showing the user's
-stored business club, full name, forum group, methodology, community chat, file
-retention preference, next forum date, and diary status.
+stored business club, full name, forum group, methodology, report recipient
+username, file retention preference, next forum date, and diary status.
 
 #### Scenario: User opens personal cabinet
 - **WHEN** an onboarded user chooses "Личный кабинет"
@@ -14,8 +14,8 @@ retention preference, next forum date, and diary status.
 
 ### Requirement: Profile field editing
 The bot SHALL let the user edit business club, full name, forum group,
-methodology, community chat, file retention preference, and next forum date from
-the personal cabinet.
+methodology, report recipient username, file retention preference, and next
+forum date from the personal cabinet.
 
 #### Scenario: User edits a field
 - **WHEN** the user chooses a field and sends a new value or selects a button
@@ -25,8 +25,7 @@ the personal cabinet.
 The bot SHALL mark skipped or defaulted fields in the personal cabinet so users
 can replace them later.
 
-#### Scenario: User skipped community chat
-- **WHEN** the personal cabinet is opened and community chat is empty
+#### Scenario: User skipped report recipient
+- **WHEN** the personal cabinet is opened and report recipient username is empty
 - **THEN** the bot shows that reports will stay in the private chat until the
   field is configured
-

@@ -14,6 +14,11 @@ def test_parse_forum_date_ru_numeric():
     assert parsed == date(2026, 6, 23)
 
 
+def test_parse_forum_date_short_day_month_current_or_next_year():
+    assert bot.parse_forum_date("2.06", base=date(2026, 5, 28)) == date(2026, 6, 2)
+    assert bot.parse_forum_date("14.03", base=date(2026, 5, 28)) == date(2027, 3, 14)
+
+
 def test_update_question_counter_message():
     message = bot.question_message(bot.UPDATE_QUESTIONS[3], 3, len(bot.UPDATE_QUESTIONS))
 
@@ -26,6 +31,7 @@ def test_build_update_markdown_contains_sections():
         "forum_group": "High Level",
         "full_name": "Иван Иванов",
         "business_club": "Эквиум",
+        "methodology": "С личной стратегией (X-Competence)",
         "next_forum_date": "2026-06-23",
     }
     answers = {bot.UPDATE_QUESTIONS[0].key: "8/10, стало спокойнее"}
@@ -33,21 +39,35 @@ def test_build_update_markdown_contains_sections():
     md = bot.build_update_markdown(user, answers)
 
     assert "# Форум-апдейт — High Level" in md
-    assert "- Методика: YPO" in md
+    assert "- Методика: С личной стратегией (X-Competence)" in md
     assert "Часть 1. Оценка трёх сфер" in md
     assert "8/10" in md
 
 
 def test_classic_methodology_selects_classic_questions():
-    user = {"methodology": "Классическая"}
+    user = {"methodology": "Классическая (YPO)"}
 
-    assert bot.methodology_for_user({}) == "YPO"
+    assert bot.methodology_for_user({}) == "Классическая (YPO)"
+    assert bot.methodology_for_user({"methodology": "YPO"}) == "Классическая (YPO)"
     assert bot.update_questions_for_user(user) == bot.CLASSIC_UPDATE_QUESTIONS
     assert bot.CLASSIC_UPDATE_QUESTIONS[0].prompt.startswith("Бизнес")
 
 
+def test_strategy_methodology_selects_x_competence_questions():
+    user = {"methodology": "С личной стратегией (X-Competence)"}
+
+    assert bot.update_questions_for_user(user) == bot.UPDATE_QUESTIONS
+
+
+def test_methodology_keyboard_has_no_skip_button():
+    keyboard = bot.methodology_keyboard().inline_keyboard
+    callback_data = [button.callback_data for row in keyboard for button in row]
+
+    assert "skip:methodology" not in callback_data
+
+
 def test_forum_guide_context_loads_materials():
-    context = bot.load_forum_guide_context("Классическая")
+    context = bot.load_forum_guide_context("Классическая (YPO)")
 
     assert "Классическая методика" in context
     assert "Форум — это" in context
@@ -88,6 +108,24 @@ def test_store_adds_diary_columns(tmp_path):
     assert "diary_feedback_prompt" in columns
 
 
+def test_store_resolves_user_by_username(tmp_path):
+    store = bot.Store(tmp_path / "state.sqlite3")
+    now = bot.now_iso()
+    store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, username, full_name, business_club,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (123, 456, "utandr", "Андрей Путин", "Другое", now, now),
+    )
+    store.conn.commit()
+
+    assert store.get_user_by_username("@utandr")["chat_id"] == 456
+    assert store.get_user_by_username("UTANDR")["telegram_user_id"] == 123
+
+
 def test_diary_feedback_without_openai(monkeypatch):
     monkeypatch.setattr(bot, "_openai", None)
     text = bot.asyncio.run(
@@ -108,13 +146,13 @@ def test_profile_defaults_are_generated():
     assert bot.default_forum_group(user) == "Форум-группа 777"
 
 
-def test_profile_cabinet_text_marks_empty_community():
+def test_profile_cabinet_text_marks_empty_report_recipient():
     text = bot.profile_cabinet_text(
         {
             "business_club": "Другое",
             "full_name": "Участник форума 777",
             "forum_group": "Форум-группа 777",
-            "methodology": "Классическая",
+            "methodology": "Классическая (YPO)",
             "community_chat": "",
             "keep_files": 0,
             "next_forum_date": "2026-06-26",
@@ -124,5 +162,6 @@ def test_profile_cabinet_text_marks_empty_community():
 
     assert "Личный кабинет" in text
     assert "Методика" in text
-    assert "Классическая" in text
+    assert "Классическая (YPO)" in text
+    assert "Получатель отчётов" in text
     assert "отчёты остаются в личном чате" in text
