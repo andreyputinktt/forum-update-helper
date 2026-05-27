@@ -728,8 +728,17 @@ def info_inline_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def back_to_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="menu:root")]])
+
+
 def cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")]])
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
+            [InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")],
+        ]
+    )
 
 
 def skip_keyboard(field: str) -> InlineKeyboardMarkup:
@@ -740,11 +749,15 @@ def business_club_keyboard(prefix: str = "club") -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(club, callback_data=f"{prefix}:{club}")] for club in BUSINESS_CLUBS]
     if prefix == "club":
         buttons.append([InlineKeyboardButton("Пропустить", callback_data="skip:business_club")])
+    else:
+        buttons.append([InlineKeyboardButton("Назад", callback_data="profile:show")])
     return InlineKeyboardMarkup(buttons)
 
 
 def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(value, callback_data=f"{prefix}:{value}")] for value in METHODOLOGIES]
+    if prefix != "methodology":
+        buttons.append([InlineKeyboardButton("Назад", callback_data="profile:show")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -752,7 +765,7 @@ def guide_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Задать вопрос по справочнику", callback_data="guide:ask")],
-            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
 
@@ -1454,12 +1467,14 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
                 InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
             ],
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
 
 
 async def show_profile_cabinet(update: Update, user: dict[str, Any]) -> None:
     fresh = store.get_user(user["telegram_user_id"]) or user
+    store.update_user(user["telegram_user_id"], state=None)
     await reply(update, profile_cabinet_text(fresh), reply_markup=profile_cabinet_keyboard())
 
 
@@ -1479,14 +1494,20 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
                 [
                     InlineKeyboardButton("Сохранять", callback_data="profile:keep:1"),
                     InlineKeyboardButton("Удалять", callback_data="profile:keep:0"),
-                ]
+                ],
+                [InlineKeyboardButton("Назад", callback_data="profile:show")],
             ]
         )
         await reply(update, "Как поступать с файлами после обработки?", reply_markup=keyboard)
         return
     if field == "community_chat":
         store.update_user(user["telegram_user_id"], state="profile:community_chat")
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Очистить", callback_data="profile:clear_community")]])
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Очистить", callback_data="profile:clear_community")],
+                [InlineKeyboardButton("Назад", callback_data="profile:show")],
+            ]
+        )
         await reply(
             update,
             "Пришли Telegram username пользователя, например <code>@utandr</code>. "
@@ -1497,7 +1518,11 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
         return
     if field == "next_forum_date":
         store.update_user(user["telegram_user_id"], state="profile:next_forum_date")
-        await reply(update, "Пришли новую дату форума: например, <code>23.06.2026</code>.")
+        await reply(
+            update,
+            "Пришли новую дату форума: например, <code>23.06.2026</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="profile:show")]]),
+        )
         return
     prompts = {
         "full_name": "Напиши новые Фамилию Имя.",
@@ -1507,7 +1532,11 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
         await reply(update, "Не понял, какое поле изменить.")
         return
     store.update_user(user["telegram_user_id"], state=f"profile:{field}")
-    await reply(update, prompts[field])
+    await reply(
+        update,
+        prompts[field],
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="profile:show")]]),
+    )
 
 
 async def handle_profile_edit_text(update: Update, user: dict[str, Any], text: str) -> None:
@@ -1634,6 +1663,7 @@ async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
                 )
             ],
             [InlineKeyboardButton("Поменять prompt обратной связи", callback_data="diary:prompt")],
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
     status = "включён" if enabled else "выключен"

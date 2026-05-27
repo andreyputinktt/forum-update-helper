@@ -44,6 +44,10 @@ psychologist, find mentor, and contact author actions.
 - **WHEN** an onboarded user sends `/menu`
 - **THEN** the bot replies with a native keyboard and inline links/actions
 
+#### Scenario: User opens a submenu
+- **WHEN** a user opens an information, guide, diary, or profile submenu
+- **THEN** the submenu includes a native "Назад" action to return to the previous menu or main menu
+
 ### Requirement: Message pacing
 The bot SHALL answer immediately after user messages or button presses. When the
 bot sends multiple messages in a row to the same chat, it SHALL wait two seconds

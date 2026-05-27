@@ -88,6 +88,21 @@ def test_information_submenu_contains_info_actions():
     assert "Ищу психолога" in labels
     assert "Ищу ментора" in labels
     assert "Связаться с автором" in labels
+    assert "Назад в меню" in labels
+
+
+def test_submenus_include_back_buttons():
+    profile_labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
+    guide_labels = [button.text for row in bot.guide_keyboard().inline_keyboard for button in row]
+    edit_labels = [
+        button.text
+        for row in bot.business_club_keyboard(prefix="profile:club").inline_keyboard
+        for button in row
+    ]
+
+    assert "Назад" in profile_labels
+    assert "Назад" in guide_labels
+    assert "Назад" in edit_labels
 
 
 def test_forum_guide_context_loads_materials():
