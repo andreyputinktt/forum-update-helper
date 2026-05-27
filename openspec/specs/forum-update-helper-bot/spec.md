@@ -91,6 +91,10 @@ X-Competence format.
 - **THEN** the bot generates a Markdown forum update document and sends it to
   the user
 
+#### Scenario: User keeps update files
+- **WHEN** the user chooses to save update files
+- **THEN** the bot explains that saved updates help track personal dynamics and can be exported as `.md` for AI tools
+
 ### Requirement: Forum date reminders
 The bot SHALL ask for the next forum date, store it, and use it for pre-forum
 update reminders and next-morning post-forum health check prompts. The bot SHALL

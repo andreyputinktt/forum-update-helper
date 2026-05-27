@@ -796,20 +796,22 @@ def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
 
 
 def keep_files_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
-    buttons: list[list[InlineKeyboardButton]] = []
-    current = onboarding_current_value(user, "keep_files")
-    if current:
-        buttons.append([InlineKeyboardButton(current, callback_data="onboard:keep_files:keep")])
-    buttons.extend(
+    keep_is_current = user.get("keep_files") == 1
+    delete_is_current = user.get("keep_files") == 0
+    return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Сохранять", callback_data="keep:1"),
-                InlineKeyboardButton("Удалять", callback_data="keep:0"),
-            ],
-            [InlineKeyboardButton("Пропустить", callback_data="skip:keep_files")],
+                InlineKeyboardButton(
+                    "Сохранять (текущее)" if keep_is_current else "Сохранять",
+                    callback_data="keep:1",
+                ),
+                InlineKeyboardButton(
+                    "Удалять (текущее)" if delete_is_current else "Удалять",
+                    callback_data="keep:0",
+                ),
+            ]
         ]
     )
-    return InlineKeyboardMarkup(buttons)
 
 
 def guide_keyboard() -> InlineKeyboardMarkup:
@@ -954,6 +956,7 @@ async def send_about(update: Update) -> None:
         "• за 3 дня до форума начинать подготовку с первого вопроса апдейта;\n"
         "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
         "• проводить весь апдейт вопрос за вопросом с кнопкой «Далее» и счётчиком;\n"
+        "• выгружать сохранённые апдейты в формате .md, чтобы их было удобно дать ИИ;\n"
         "• отвечать на вопросы по сохранённым материалам форума;\n"
         "• принимать голосовые ответы и показывать транскрипт;\n"
         "• работать в режиме дневника и давать обратную связь по твоему prompt;\n"
@@ -1074,6 +1077,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await start_guide_question(update, user)
     elif data == "profile:show":
         await show_profile_cabinet(update, user)
+    elif data == "profile:download_files":
+        await send_saved_update_files(update, user)
     elif data.startswith("profile:edit:"):
         await start_profile_edit(update, user, data.rsplit(":", 1)[1])
     elif data.startswith("profile:club:"):
@@ -1288,7 +1293,8 @@ async def handle_onboarding_text(
         await reply(
             update,
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n\n"
+            "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n"
+            "Сохранять апдейты полезно, чтобы потом видеть личную динамику и выгружать .md для ИИ.\n\n"
             "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
             reply_markup=keep_files_keyboard(user),
         )
@@ -1410,7 +1416,8 @@ async def handle_onboarding_skip(
             update,
             "Ок, отчёты о здоровье пока будут оставаться в личном чате.\n\n"
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n\n"
+            "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n"
+            "Сохранять апдейты полезно, чтобы потом видеть личную динамику и выгружать .md для ИИ.\n\n"
             "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
             reply_markup=keep_files_keyboard(user),
         )
@@ -1524,6 +1531,7 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
                 InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
             ],
+            [InlineKeyboardButton("Загрузить мои файлы", callback_data="profile:download_files")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
@@ -1625,6 +1633,40 @@ async def handle_profile_edit_text(update: Update, user: dict[str, Any], text: s
 
     await reply(update, "Сохранил.")
     await show_profile_cabinet(update, updated)
+
+
+def saved_update_files(user: dict[str, Any]) -> list[Path]:
+    user_dir = UPDATES_DIR / str(user["telegram_user_id"])
+    if not user_dir.exists():
+        return []
+    return sorted(user_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
+    files = saved_update_files(user)
+    if not files:
+        await reply(
+            update,
+            "Сохранённых .md апдейтов пока нет. Чтобы они появлялись, включи сохранение файлов "
+            "в личном кабинете или на шаге 6 при /start.",
+            reply_markup=profile_cabinet_keyboard(),
+        )
+        return
+    if update.effective_message is None or update.effective_chat is None:
+        return
+    await reply(update, f"Нашёл сохранённые .md апдейты: <b>{len(files)}</b>. Отправляю последние файлы.")
+    for path in files[:10]:
+        with path.open("rb") as fh:
+            await spaced_bot_send(
+                update.effective_chat.id,
+                lambda path=path, fh=fh: update.effective_message.reply_document(
+                    document=fh,
+                    filename=path.name,
+                    caption="Форумный апдейт в .md — можно передать ИИ.",
+                ),
+            )
+    if len(files) > 10:
+        await reply(update, f"Отправил последние 10 файлов из {len(files)}. Остальные оставил на сервере.")
 
 
 async def show_forum_guide(update: Update, user: dict[str, Any]) -> None:

@@ -116,6 +116,15 @@ def test_profile_complete_allows_empty_optional_identity_fields():
     assert bot.is_profile_complete(user)
 
 
+def test_keep_files_keyboard_has_no_skip_or_duplicate_current_button():
+    labels = [button.text for row in bot.keep_files_keyboard({"keep_files": 1}).inline_keyboard for button in row]
+
+    assert labels.count("Сохранять") == 0
+    assert "Сохранять (текущее)" in labels
+    assert "Удалять" in labels
+    assert "Пропустить" not in labels
+
+
 def test_submenus_include_back_buttons():
     profile_labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
     guide_labels = [button.text for row in bot.guide_keyboard().inline_keyboard for button in row]
@@ -128,6 +137,28 @@ def test_submenus_include_back_buttons():
     assert "Назад" in profile_labels
     assert "Назад" in guide_labels
     assert "Назад" in edit_labels
+
+
+def test_profile_has_download_files_button():
+    labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
+
+    assert "Загрузить мои файлы" in labels
+
+
+def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "UPDATES_DIR", tmp_path)
+    user = {"telegram_user_id": 123}
+    user_dir = tmp_path / "123"
+    user_dir.mkdir()
+    older = user_dir / "older.md"
+    newer = user_dir / "newer.md"
+    older.write_text("older", encoding="utf-8")
+    newer.write_text("newer", encoding="utf-8")
+
+    files = bot.saved_update_files(user)
+
+    assert files[0].name == "newer.md"
+    assert {path.name for path in files} == {"older.md", "newer.md"}
 
 
 def test_forum_guide_context_loads_materials():

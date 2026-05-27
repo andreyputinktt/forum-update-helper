@@ -7,6 +7,8 @@ TBD - created by archiving change add-onboarding-skip-and-profile-cabinet. Updat
 The bot SHALL provide a Telegram-native personal cabinet showing the user's
 stored business club, full name, forum group, methodology, report recipient
 username, file retention preference, next forum date, and diary status.
+The personal cabinet SHALL let the user download saved forum update Markdown
+files.
 
 #### Scenario: User opens personal cabinet
 - **WHEN** an onboarded user chooses "Личный кабинет"
@@ -29,3 +31,8 @@ can replace them later.
 - **WHEN** the personal cabinet is opened and report recipient username is empty
 - **THEN** the bot shows that reports will stay in the private chat until the
   field is configured
+
+#### Scenario: User downloads saved update files
+- **WHEN** the user presses "Загрузить мои файлы" in the personal cabinet
+- **THEN** the bot sends saved `.md` forum update files when they exist
+- **AND** explains how to enable file saving when no saved files exist
