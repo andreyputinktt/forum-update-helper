@@ -82,6 +82,10 @@ BUSINESS_CLUBS = ("Атланты", "Эквиум", "К1", "Терра", "Ско
 METHODOLOGY_CLASSIC = "Классическая (YPO)"
 METHODOLOGY_STRATEGY = "С личной стратегией (X-Competence)"
 METHODOLOGIES = (METHODOLOGY_CLASSIC, METHODOLOGY_STRATEGY)
+METHODOLOGY_CALLBACKS = {
+    "classic": METHODOLOGY_CLASSIC,
+    "strategy": METHODOLOGY_STRATEGY,
+}
 DEFAULT_METHODOLOGY = METHODOLOGY_CLASSIC
 ONBOARDING_TOTAL_STEPS = 7
 FORUM_GUIDE_DIR = BASE_DIR / "docs" / "forum-guide"
@@ -472,6 +476,10 @@ def methodology_for_user(user: dict[str, Any]) -> str:
     return normalize_methodology(user.get("methodology")) or DEFAULT_METHODOLOGY
 
 
+def methodology_from_callback(value: str) -> str | None:
+    return METHODOLOGY_CALLBACKS.get(value) or normalize_methodology(value)
+
+
 def update_questions_for_user(user: dict[str, Any]) -> list[Question]:
     if methodology_for_user(user) == METHODOLOGY_CLASSIC:
         return CLASSIC_UPDATE_QUESTIONS
@@ -755,7 +763,10 @@ def business_club_keyboard(prefix: str = "club") -> InlineKeyboardMarkup:
 
 
 def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
-    buttons = [[InlineKeyboardButton(value, callback_data=f"{prefix}:{value}")] for value in METHODOLOGIES]
+    buttons = [
+        [InlineKeyboardButton(label, callback_data=f"{prefix}:{key}")]
+        for key, label in METHODOLOGY_CALLBACKS.items()
+    ]
     if prefix != "methodology":
         buttons.append([InlineKeyboardButton("Назад", callback_data="profile:show")])
     return InlineKeyboardMarkup(buttons)
@@ -996,7 +1007,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if user.get("state") != "onboarding:methodology":
             await reply(update, "Эта кнопка уже неактуальна. Методика меняется в личном кабинете.")
             return
-        await handle_onboarding_text(update, context, data.split(":", 1)[1])
+        methodology = methodology_from_callback(data.split(":", 1)[1])
+        await handle_onboarding_text(update, context, methodology or "")
     elif data.startswith("keep:"):
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
@@ -1024,7 +1036,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await reply(update, "Бизнес-клуб обновлён.")
         await show_profile_cabinet(update, updated)
     elif data.startswith("profile:methodology:"):
-        updated = store.update_user(user["telegram_user_id"], methodology=data.split(":", 2)[2], state=None)
+        methodology = methodology_from_callback(data.split(":", 2)[2]) or DEFAULT_METHODOLOGY
+        updated = store.update_user(user["telegram_user_id"], methodology=methodology, state=None)
         await reply(update, "Методика обновлена.")
         await show_profile_cabinet(update, updated)
     elif data.startswith("profile:keep:"):

@@ -64,6 +64,8 @@ def test_methodology_keyboard_has_no_skip_button():
     callback_data = [button.callback_data for row in keyboard for button in row]
 
     assert "skip:methodology" not in callback_data
+    assert set(callback_data) == {"methodology:classic", "methodology:strategy"}
+    assert all(len(value.encode("utf-8")) <= 64 for value in callback_data)
 
 
 def test_main_menu_uses_information_submenu():
