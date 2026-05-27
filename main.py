@@ -1423,6 +1423,10 @@ def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     UPDATES_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     app = build_application()
     app.run_polling(allowed_updates=["message", "callback_query"])
 
