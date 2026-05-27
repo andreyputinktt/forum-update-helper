@@ -16,10 +16,15 @@ Telegram username belongs to a user who has already started the bot.
 - **WHEN** a new user sends `/start` and answers or skips all onboarding prompts
 - **THEN** the bot stores the profile and shows the main Telegram menu
 
+#### Scenario: Existing user restarts onboarding
+- **WHEN** an existing user sends `/start`
+- **THEN** the bot starts the onboarding questions again
+- **AND** each question with a previously stored value offers that value as a confirmation button
+- **AND** the skip action clears the optional stored value for that question
+
 #### Scenario: User skips identity fields
 - **WHEN** the user skips business club, full name, and forum group
-- **THEN** the bot stores business club `Другое`, a generated full name, and a
-  generated forum group name
+- **THEN** the bot stores empty values for those optional fields
 
 #### Scenario: User selects methodology
 - **WHEN** the user chooses `Классическая (YPO)` or `С личной стратегией (X-Competence)`

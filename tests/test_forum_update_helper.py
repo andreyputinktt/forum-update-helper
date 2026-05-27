@@ -93,6 +93,29 @@ def test_information_submenu_contains_info_actions():
     assert "Назад в меню" in labels
 
 
+def test_onboarding_existing_value_buttons():
+    labels = [
+        button.text
+        for row in bot.skip_keyboard("full_name", {"full_name": "Андрей Путин"}).inline_keyboard
+        for button in row
+    ]
+
+    assert "Андрей Путин" in labels
+    assert "Пропустить" in labels
+
+
+def test_profile_complete_allows_empty_optional_identity_fields():
+    user = {
+        "business_club": "",
+        "full_name": "",
+        "forum_group": "",
+        "keep_files": 0,
+        "next_forum_date": "2026-06-02",
+    }
+
+    assert bot.is_profile_complete(user)
+
+
 def test_submenus_include_back_buttons():
     profile_labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
     guide_labels = [button.text for row in bot.guide_keyboard().inline_keyboard for button in row]

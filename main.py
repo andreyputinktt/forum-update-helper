@@ -452,10 +452,7 @@ def normalize_report_recipient(value: str) -> str:
 
 
 def is_profile_complete(user: dict[str, Any]) -> bool:
-    return all(
-        user.get(field)
-        for field in ("business_club", "full_name", "forum_group", "next_forum_date")
-    ) and user.get("keep_files") is not None
+    return bool(user.get("next_forum_date")) and user.get("keep_files") is not None
 
 
 def normalize_methodology(value: Any) -> str | None:
@@ -749,12 +746,38 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def skip_keyboard(field: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data=f"skip:{field}")]])
+def onboarding_current_value(user: dict[str, Any], field: str) -> str:
+    if field == "methodology":
+        return methodology_for_user(user)
+    if field == "keep_files":
+        if user.get("keep_files") is None:
+            return ""
+        return "Сохранять" if user.get("keep_files") else "Удалять"
+    if field == "next_forum_date":
+        return str(user.get("next_forum_date") or "")
+    mapping = {
+        "business_club": "business_club",
+        "full_name": "full_name",
+        "forum_group": "forum_group",
+        "community_chat": "community_chat",
+    }
+    return str(user.get(mapping.get(field, field)) or "").strip()
 
 
-def business_club_keyboard(prefix: str = "club") -> InlineKeyboardMarkup:
+def skip_keyboard(field: str, user: dict[str, Any] | None = None) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    current = onboarding_current_value(user or {}, field)
+    if current:
+        buttons.append([InlineKeyboardButton(current, callback_data=f"onboard:{field}:keep")])
+    buttons.append([InlineKeyboardButton("Пропустить", callback_data=f"skip:{field}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def business_club_keyboard(prefix: str = "club", user: dict[str, Any] | None = None) -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(club, callback_data=f"{prefix}:{club}")] for club in BUSINESS_CLUBS]
+    current = onboarding_current_value(user or {}, "business_club")
+    if prefix == "club" and current and current not in BUSINESS_CLUBS:
+        buttons.insert(0, [InlineKeyboardButton(current, callback_data="onboard:business_club:keep")])
     if prefix == "club":
         buttons.append([InlineKeyboardButton("Пропустить", callback_data="skip:business_club")])
     else:
@@ -769,6 +792,23 @@ def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
     ]
     if prefix != "methodology":
         buttons.append([InlineKeyboardButton("Назад", callback_data="profile:show")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def keep_files_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    current = onboarding_current_value(user, "keep_files")
+    if current:
+        buttons.append([InlineKeyboardButton(current, callback_data="onboard:keep_files:keep")])
+    buttons.extend(
+        [
+            [
+                InlineKeyboardButton("Сохранять", callback_data="keep:1"),
+                InlineKeyboardButton("Удалять", callback_data="keep:0"),
+            ],
+            [InlineKeyboardButton("Пропустить", callback_data="skip:keep_files")],
+        ]
+    )
     return InlineKeyboardMarkup(buttons)
 
 
@@ -840,9 +880,6 @@ async def cmd_getid(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "start")
-    if is_profile_complete(user):
-        await show_menu(update)
-        return
     await start_onboarding(update, context, user)
 
 
@@ -859,11 +896,17 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
         "Можно отвечать текстом или голосом. Голос я транскрибирую и покажу текст."
     )
     await reply(update, text)
-    store.update_user(user["telegram_user_id"], state="onboarding:business_club")
+    store.update_user(
+        user["telegram_user_id"],
+        state="onboarding:business_club",
+        active_flow=None,
+        active_step=0,
+        flow_payload="{}",
+    )
     await reply(
         update,
         f"<b>Шаг 1/{ONBOARDING_TOTAL_STEPS}</b>\nВыбери бизнес-клуб.",
-        reply_markup=business_club_keyboard(),
+        reply_markup=business_club_keyboard(user=user),
     )
 
 
@@ -1003,6 +1046,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("club:"):
         await handle_onboarding_text(update, context, data.split(":", 1)[1])
+    elif data.startswith("onboard:"):
+        await handle_onboarding_keep(update, context, data.split(":", 2)[1])
     elif data.startswith("methodology:"):
         if user.get("state") != "onboarding:methodology":
             await reply(update, "Эта кнопка уже неактуальна. Методика меняется в личном кабинете.")
@@ -1123,6 +1168,10 @@ async def route_text(
         await shortcuts[lower]()
         return
 
+    if str(user.get("state") or "").startswith("onboarding:"):
+        await handle_onboarding_text(update, context, text)
+        return
+
     if not is_profile_complete(user):
         await handle_onboarding_text(update, context, text)
         return
@@ -1182,21 +1231,21 @@ async def handle_onboarding_text(
         await reply(
             update,
             f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
-            reply_markup=skip_keyboard("full_name"),
+            reply_markup=skip_keyboard("full_name", user),
         )
         return
 
     if state == "onboarding:full_name":
-        store.update_user(user["telegram_user_id"], full_name=text[:160], state="onboarding:forum_group")
+        user = store.update_user(user["telegram_user_id"], full_name=text[:160], state="onboarding:forum_group")
         await reply(
             update,
             f"<b>Шаг 3/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
-            reply_markup=skip_keyboard("forum_group"),
+            reply_markup=skip_keyboard("forum_group", user),
         )
         return
 
     if state == "onboarding:forum_group":
-        store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:methodology")
+        user = store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:methodology")
         await reply(
             update,
             f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
@@ -1222,7 +1271,7 @@ async def handle_onboarding_text(
             "Кому отправлять статистику о здоровье форум-группы?\n\n"
             "Пришли Telegram username пользователя, например <code>@utandr</code>. "
             "Бот сможет отправить ему отчёт, только если этот пользователь уже запускал бота.",
-            reply_markup=skip_keyboard("community_chat"),
+            reply_markup=skip_keyboard("community_chat", user),
         )
         return
 
@@ -1235,22 +1284,13 @@ async def handle_onboarding_text(
                 reply_markup=skip_keyboard("community_chat"),
             )
             return
-        store.update_user(user["telegram_user_id"], community_chat=recipient, state="onboarding:keep_files")
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Сохранять", callback_data="keep:1"),
-                    InlineKeyboardButton("Удалять", callback_data="keep:0"),
-                ],
-                [InlineKeyboardButton("Пропустить", callback_data="skip:keep_files")],
-            ]
-        )
+        user = store.update_user(user["telegram_user_id"], community_chat=recipient, state="onboarding:keep_files")
         await reply(
             update,
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n\n"
             "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
-            reply_markup=keyboard,
+            reply_markup=keep_files_keyboard(user),
         )
         return
 
@@ -1266,7 +1306,7 @@ async def handle_onboarding_text(
             f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Когда следующий форум? Напиши дату: например, <code>23.06.2026</code> "
             "или <code>2026-06-23</code>.",
-            reply_markup=skip_keyboard("next_forum_date"),
+            reply_markup=skip_keyboard("next_forum_date", user),
         )
         return
 
@@ -1287,6 +1327,26 @@ async def handle_onboarding_text(
         )
         await notify_admin_new_user(context, user)
         await send_about(update)
+
+
+async def handle_onboarding_keep(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    field: str,
+) -> None:
+    user = store.ensure_user(update)
+    state = user.get("state") or ""
+    expected = state.removeprefix("onboarding:")
+    if field != expected:
+        await reply(update, "Эта кнопка уже неактуальна. Продолжаем текущий шаг.")
+        return
+    value = onboarding_current_value(user, field)
+    if not value:
+        await reply(update, "Сохранённого значения нет. Введи новое значение или нажми «Пропустить».")
+        return
+    if field == "keep_files":
+        value = "да" if user.get("keep_files") else "нет"
+    await handle_onboarding_text(update, context, value)
 
 
 async def handle_onboarding_skip(
@@ -1310,41 +1370,34 @@ async def handle_onboarding_skip(
         return
 
     if field == "business_club":
-        user = store.update_user(user["telegram_user_id"], business_club="Другое", state="onboarding:full_name")
+        user = store.update_user(user["telegram_user_id"], business_club="", state="onboarding:full_name")
         await reply(
             update,
-            f"Ок, поставил бизнес-клуб <b>Другое</b>.\n\n"
+            "Ок, очистил бизнес-клуб.\n\n"
             f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
-            reply_markup=skip_keyboard("full_name"),
+            reply_markup=skip_keyboard("full_name", user),
         )
         return
 
     if field == "full_name":
-        name = default_full_name(user)
-        group = default_forum_group(user)
         user = store.update_user(
             user["telegram_user_id"],
-            business_club="Другое",
-            full_name=name,
-            forum_group=group,
-            state="onboarding:methodology",
+            full_name="",
+            state="onboarding:forum_group",
         )
         await reply(
             update,
-            f"Ок, заполнил имя как <b>{esc(name)}</b>, форум-группу как "
-            f"<b>{esc(group)}</b>, бизнес-клуб как <b>Другое</b>.\n\n"
-            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Выбери методику подготовки апдейта.",
-            reply_markup=methodology_keyboard(),
+            "Ок, очистил Фамилию Имя.\n\n"
+            f"<b>Шаг 3/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
+            reply_markup=skip_keyboard("forum_group", user),
         )
         return
 
     if field == "forum_group":
-        value = default_forum_group(user)
-        user = store.update_user(user["telegram_user_id"], forum_group=value, state="onboarding:methodology")
+        user = store.update_user(user["telegram_user_id"], forum_group="", state="onboarding:methodology")
         await reply(
             update,
-            f"Ок, заполнил форум-группу как <b>{esc(value)}</b>.\n\n"
+            "Ок, очистил форум-группу.\n\n"
             f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Выбери методику подготовки апдейта.",
             reply_markup=methodology_keyboard(),
@@ -1353,22 +1406,13 @@ async def handle_onboarding_skip(
 
     if field == "community_chat":
         user = store.update_user(user["telegram_user_id"], community_chat="", state="onboarding:keep_files")
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Сохранять", callback_data="keep:1"),
-                    InlineKeyboardButton("Удалять", callback_data="keep:0"),
-                ],
-                [InlineKeyboardButton("Пропустить", callback_data="skip:keep_files")],
-            ]
-        )
         await reply(
             update,
             "Ок, отчёты о здоровье пока будут оставаться в личном чате.\n\n"
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n\n"
             "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
-            reply_markup=keyboard,
+            reply_markup=keep_files_keyboard(user),
         )
         return
 
@@ -1379,7 +1423,7 @@ async def handle_onboarding_skip(
             "Ок, по умолчанию буду удалять файлы после обработки.\n\n"
             f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Когда следующий форум?",
-            reply_markup=skip_keyboard("next_forum_date"),
+            reply_markup=skip_keyboard("next_forum_date", user),
         )
         return
 
