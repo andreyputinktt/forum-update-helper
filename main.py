@@ -42,7 +42,12 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 UPDATES_DIR = DATA_DIR / "updates"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0") or "0")
+ADMIN_CHAT_ID = int(
+    os.getenv("ADMIN_CHAT_ID")
+    or os.getenv("ASSISTANTS_TELEGRAM_CHAT_ID")
+    or os.getenv("TELEGRAM_CHAT_ID")
+    or "0"
+)
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
 DAILY_MAINTENANCE_TIME = os.getenv("DAILY_MAINTENANCE_TIME", "09:30")
 OFFSITE_INTERVAL_DAYS = int(os.getenv("OFFSITE_INTERVAL_DAYS", "90"))
