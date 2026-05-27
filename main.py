@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import dateparser
 from dotenv import load_dotenv
 from openai import OpenAI
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import (
@@ -741,7 +741,6 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
-            [InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")],
         ]
     )
 
@@ -823,12 +822,15 @@ def guide_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def flow_keyboard(show_next: bool = False) -> InlineKeyboardMarkup:
-    buttons: list[list[InlineKeyboardButton]] = []
-    if show_next:
-        buttons.append([InlineKeyboardButton("Далее", callback_data="flow:next")])
-    buttons.append([InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")])
-    return InlineKeyboardMarkup(buttons)
+def flow_keyboard(_show_next: bool = False) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Назад", callback_data="flow:back"),
+                InlineKeyboardButton("Далее", callback_data="flow:next"),
+            ]
+        ]
+    )
 
 
 async def safe_send(
@@ -1068,6 +1070,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "menu:health":
         await start_health_flow(update, user)
     elif data == "menu:root":
+        if not str(user.get("state") or "").startswith("onboarding:"):
+            store.set_flow(user["telegram_user_id"], None)
+            store.update_user(user["telegram_user_id"], state=None)
         await show_menu(update)
     elif data == "menu:info":
         await show_info_menu(update)
@@ -1127,6 +1132,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await reply(update, "Сценарий остановлен.", reply_markup=MAIN_KEYBOARD)
     elif data == "flow:next":
         await handle_flow_next(update, context, user)
+    elif data == "flow:back":
+        await handle_flow_back(update, user)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1169,6 +1176,13 @@ async def route_text(
         "связаться с автором": lambda: reply(update, esc(AUTHOR_TEXT)),
         "удалить мои данные": lambda: ask_delete_data(update),
     }
+    if lower in shortcuts and user.get("active_flow"):
+        await reply(
+            update,
+            "Сейчас идёт сценарий. Используй кнопки «Назад» и «Далее» под вопросом или отправь ответ текстом/голосом.",
+            reply_markup=flow_keyboard(),
+        )
+        return
     if lower in shortcuts and not user.get("state") and not user.get("active_flow"):
         await shortcuts[lower]()
         return
@@ -1880,8 +1894,9 @@ async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
         update,
         f"<b>Начинаем апдейт: {esc(methodology)}</b>\n\n"
         "Будем идти по всем вопросам. Отвечай коротко или голосом. "
-        "В конце я соберу Markdown-файл апдейта.",
-        reply_markup=cancel_keyboard(),
+        "В конце я соберу Markdown-файл апдейта. На время сценария нижнее меню скрыто, "
+        "чтобы его кнопки не попадали в ответы.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     await ask_current_question(update, user, questions)
 
@@ -1895,8 +1910,9 @@ async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
         update,
         "<b>Health check форум-группы</b>\n\n"
         "Отвечай честно и конкретно. В конце я соберу отчёт и попробую отправить "
-        "его указанному Telegram-пользователю, если он уже запускал бота.",
-        reply_markup=cancel_keyboard(),
+        "его указанному Telegram-пользователю, если он уже запускал бота. "
+        "На время сценария нижнее меню скрыто.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     await ask_current_question(update, user, HEALTH_QUESTIONS)
 
@@ -1941,12 +1957,44 @@ async def handle_flow_next(
         await reply(update, "Активного сценария нет. Выбери действие в меню.", reply_markup=MAIN_KEYBOARD)
         return
     if user.get("state") != "flow:await_next":
+        step = int(user.get("active_step") or 0)
+        if step >= len(questions):
+            await finish_flow(update, context, user)
+            return
+        payload = store.payload(user)
+        answers = payload.setdefault("answers", {})
+        answers.setdefault(questions[step].key, "")
+        user = store.update_user(
+            user["telegram_user_id"],
+            active_step=step + 1,
+            flow_payload=json.dumps(payload, ensure_ascii=False),
+            state=None,
+        )
+        if step + 1 >= len(questions):
+            await finish_flow(update, context, user)
+            return
         await ask_current_question(update, user, questions)
         return
     user = store.update_user(user["telegram_user_id"], state=None)
     if int(user.get("active_step") or 0) >= len(questions):
         await finish_flow(update, context, user)
         return
+    await ask_current_question(update, user, questions)
+
+
+async def handle_flow_back(update: Update, user: dict[str, Any]) -> None:
+    flow = user.get("active_flow")
+    if flow == "update":
+        questions = update_questions_for_user(user)
+    elif flow == "health":
+        questions = HEALTH_QUESTIONS
+    else:
+        await reply(update, "Активного сценария нет. Выбери действие в меню.", reply_markup=MAIN_KEYBOARD)
+        return
+
+    step = int(user.get("active_step") or 0)
+    target_step = max(step - 1, 0)
+    user = store.update_user(user["telegram_user_id"], active_step=target_step, state=None)
     await ask_current_question(update, user, questions)
 
 
@@ -2323,6 +2371,7 @@ async def maybe_send_forum_reminders(
                     "<b>Пора готовить форумный апдейт</b>\n\n"
                     f"До форума {days_left} дн. Начинаю подготовку по методике {esc(methodology)}. "
                     "Отвечай текстом или голосом.",
+                    reply_markup=ReplyKeyboardRemove(),
                 )
                 await safe_send(
                     context,
@@ -2350,6 +2399,7 @@ async def maybe_send_forum_reminders(
                     chat_id,
                     "<b>Утро после форума</b>\n\n"
                     "Давай зафиксируем здоровье форум-группы. Первый вопрос:",
+                    reply_markup=ReplyKeyboardRemove(),
                 )
                 await safe_send(
                     context,

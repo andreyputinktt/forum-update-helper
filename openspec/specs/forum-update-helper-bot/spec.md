@@ -79,12 +79,21 @@ user's file-retention setting.
 The bot SHALL guide the user through all sections of the selected forum update
 methodology. For `Классическая (YPO)`, the bot SHALL use the classic monthly
 update format. For `С личной стратегией (X-Competence)`, the bot SHALL use the
-X-Competence format.
+X-Competence format. While an update or health-check flow is active, the bot
+SHALL hide the persistent lower menu and SHALL NOT treat stale lower-menu button
+text as a questionnaire answer.
 
 #### Scenario: User advances through questions
 - **WHEN** the user answers a questionnaire step
 - **THEN** the bot shows a filled counter such as `3/50` and waits for the
   user to press "Далее" before asking the next question
+- **AND** the flow controls include "Назад" and "Далее"
+
+#### Scenario: User skips or revisits a question
+- **WHEN** the user presses "Далее" on an unanswered questionnaire step
+- **THEN** the bot skips that step and asks the next question
+- **WHEN** the user presses "Назад"
+- **THEN** the bot returns to the previous questionnaire step
 
 #### Scenario: User completes update preparation
 - **WHEN** the user answers all update-flow questions

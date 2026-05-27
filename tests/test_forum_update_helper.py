@@ -139,6 +139,16 @@ def test_submenus_include_back_buttons():
     assert "Назад" in edit_labels
 
 
+def test_flow_keyboard_uses_native_next_and_back_actions():
+    keyboard = bot.flow_keyboard().inline_keyboard
+    labels = [button.text for row in keyboard for button in row]
+    callbacks = [button.callback_data for row in keyboard for button in row]
+
+    assert labels == ["Назад", "Далее"]
+    assert callbacks == ["flow:back", "flow:next"]
+    assert "Отменить сценарий" not in labels
+
+
 def test_profile_has_download_files_button():
     labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
 
