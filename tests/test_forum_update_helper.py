@@ -66,6 +66,30 @@ def test_methodology_keyboard_has_no_skip_button():
     assert "skip:methodology" not in callback_data
 
 
+def test_main_menu_uses_information_submenu():
+    main_buttons = [button.text for row in bot.MAIN_KEYBOARD.keyboard for button in row]
+    inline_callbacks = [
+        button.callback_data
+        for row in bot.main_inline_keyboard().inline_keyboard
+        for button in row
+        if button.callback_data
+    ]
+
+    assert "Информация" in main_buttons
+    assert "О боте" not in main_buttons
+    assert "Ищу психолога" not in main_buttons
+    assert "menu:info" in inline_callbacks
+
+
+def test_information_submenu_contains_info_actions():
+    labels = [button.text for row in bot.info_inline_keyboard().inline_keyboard for button in row]
+
+    assert "О боте" in labels
+    assert "Ищу психолога" in labels
+    assert "Ищу ментора" in labels
+    assert "Связаться с автором" in labels
+
+
 def test_forum_guide_context_loads_materials():
     context = bot.load_forum_guide_context("Классическая (YPO)")
 

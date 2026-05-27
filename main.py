@@ -92,11 +92,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["Подготовить апдейт", "Дата следующего форума"],
         ["Здоровье форум-группы", "Справочник форума"],
-        ["Личный кабинет"],
-        ["О боте", "Режим дневника"],
-        ["Промпт дневника"],
-        ["Ищу психолога", "Ищу коуча"],
-        ["Сделать собственный бот", "Связаться с автором"],
+        ["Личный кабинет", "Режим дневника"],
+        ["Промпт дневника", "Информация"],
         ["Удалить мои данные"],
     ],
     resize_keyboard=True,
@@ -708,14 +705,25 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
                 InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
             ],
-            [InlineKeyboardButton("О боте", callback_data="menu:about")],
+            [InlineKeyboardButton("Информация", callback_data="menu:info")],
+            [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
+        ]
+    )
+
+
+def info_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("О боте", callback_data="menu:about"),
+                InlineKeyboardButton("Связаться с автором", callback_data="menu:author"),
+            ],
             [
                 InlineKeyboardButton("Ищу психолога", url=PSYCHOLOGIST_URL),
-                InlineKeyboardButton("Ищу коуча", url=COACH_URL),
+                InlineKeyboardButton("Ищу ментора", url=COACH_URL),
             ],
             [InlineKeyboardButton("Сделать собственный бот", url=BUILD_BOT_DOC_URL)],
-            [InlineKeyboardButton("Связаться с автором", callback_data="menu:author")],
-            [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
+            [InlineKeyboardButton("Назад в меню", callback_data="menu:root")],
         ]
     )
 
@@ -844,6 +852,14 @@ async def show_menu(update: Update) -> None:
     await reply(update, "Быстрые действия:", reply_markup=main_inline_keyboard())
 
 
+async def show_info_menu(update: Update) -> None:
+    await reply(
+        update,
+        "<b>Информация</b>\nВыбери, что нужно:",
+        reply_markup=info_inline_keyboard(),
+    )
+
+
 async def cmd_menu(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "menu")
@@ -879,7 +895,7 @@ async def send_about(update: Update) -> None:
         "• удалить твои данные с сервера по кнопке.\n\n"
         f'<a href="{REPO_URL}">Репозиторий</a> · '
         f'<a href="{BUILD_BOT_DOC_URL}">Сделать собственный бот</a>',
-        reply_markup=main_inline_keyboard(),
+        reply_markup=info_inline_keyboard(),
     )
 
 
@@ -978,6 +994,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await ask_next_forum_date(update, user)
     elif data == "menu:health":
         await start_health_flow(update, user)
+    elif data == "menu:root":
+        await show_menu(update)
+    elif data == "menu:info":
+        await show_info_menu(update)
     elif data == "guide:open":
         await show_forum_guide(update, user)
     elif data == "guide:ask":
@@ -1057,6 +1077,7 @@ async def route_text(
         "здоровье форум-группы": lambda: start_health_flow(update, user),
         "справочник форума": lambda: show_forum_guide(update, user),
         "личный кабинет": lambda: show_profile_cabinet(update, user),
+        "информация": lambda: show_info_menu(update),
         "о боте": lambda: send_about(update),
         "режим дневника": lambda: show_diary_mode_menu(update, user),
         "промпт дневника": lambda: start_diary_prompt_setup(update, user, enable=True),
@@ -1066,7 +1087,9 @@ async def route_text(
             f'<a href="{REPO_URL}">Репозиторий</a>',
         ),
         "ищу психолога": lambda: reply(update, f'<a href="{PSYCHOLOGIST_URL}">Рекомендованные психологи</a>'),
-        "ищу коуча": lambda: reply(update, f'<a href="{COACH_URL}">Коучи 5 Prism</a>'),
+        "ищу коуча": lambda: reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>'),
+        "ищу ментора": lambda: reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>'),
+        "ищу ментора/коуча": lambda: reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>'),
         "связаться с автором": lambda: reply(update, esc(AUTHOR_TEXT)),
         "удалить мои данные": lambda: ask_delete_data(update),
     }

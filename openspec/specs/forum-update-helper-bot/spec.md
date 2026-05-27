@@ -36,8 +36,9 @@ Telegram username belongs to a user who has already started the bot.
 ### Requirement: Telegram-native menu
 The bot SHALL provide persistent and inline Telegram buttons for core actions:
 prepare update, set next forum date, run health check, personal cabinet, diary
-mode, diary prompt editing, bot info, build your own bot, find psychologist,
-find coach, contact author, show stats, and delete my data.
+mode, diary prompt editing, information submenu, and delete my data. The
+information submenu SHALL contain bot info, build your own bot, find
+psychologist, find mentor, and contact author actions.
 
 #### Scenario: User opens menu
 - **WHEN** an onboarded user sends `/menu`
