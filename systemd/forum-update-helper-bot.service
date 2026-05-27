@@ -1,0 +1,16 @@
+[Unit]
+Description=ForumUpdateHelperBot Telegram service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=a.putin
+WorkingDirectory=/home/a.putin/GIT/assistants/forum-update-helper
+EnvironmentFile=/home/a.putin/GIT/assistants/forum-update-helper/.env
+ExecStart=/home/a.putin/GIT/assistants/forum-update-helper/.venv/bin/python /home/a.putin/GIT/assistants/forum-update-helper/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1426 @@
+#!/usr/bin/env python3
+"""ForumUpdateHelperBot: Telegram assistant for X-Competence forum updates."""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import json
+import logging
+import os
+import re
+import shutil
+import sqlite3
+import tempfile
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import dateparser
+from dotenv import load_dotenv
+from openai import OpenAI
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.constants import ChatAction, ParseMode
+from telegram.error import TelegramError
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).expanduser()
+DB_PATH = DATA_DIR / "forum_update_helper.sqlite3"
+UPLOADS_DIR = DATA_DIR / "uploads"
+UPDATES_DIR = DATA_DIR / "updates"
+
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0") or "0")
+TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
+DAILY_MAINTENANCE_TIME = os.getenv("DAILY_MAINTENANCE_TIME", "09:30")
+OFFSITE_INTERVAL_DAYS = int(os.getenv("OFFSITE_INTERVAL_DAYS", "90"))
+PRE_FORUM_REMINDER_DAYS = tuple(
+    int(x.strip()) for x in os.getenv("PRE_FORUM_REMINDER_DAYS", "3").split(",") if x.strip()
+)
+TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
+OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    level=logging.INFO,
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+log = logging.getLogger("forum_update_helper")
+
+_openai = OpenAI() if os.getenv("OPENAI_API_KEY") else None
+
+BUSINESS_CLUBS = ("Атланты", "Эквиум", "К1", "Терра", "Сколково", "Другое")
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["Подготовить апдейт", "Дата следующего форума"],
+        ["Здоровье форум-группы", "О боте"],
+        ["Ищу психолога", "Ищу коуча"],
+        ["Связаться с автором", "Удалить мои данные"],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+PSYCHOLOGIST_URL = "https://all.achernigova.ru/p/recommendediarpt/"
+COACH_URL = "https://5prism.ru/kouchi/"
+AUTHOR_TEXT = (
+    "Автор бота: Андрей Путин.\n"
+    "Telegram: @utandr\n\n"
+    "Можно писать, если хотите связаться с автором, предложить улучшение или "
+    "стать соавтором. Бот развёрнут на сервере компании kt.team."
+)
+
+
+@dataclass(frozen=True)
+class Question:
+    key: str
+    prompt: str
+    section: str
+
+
+SPHERES = ("Моё дело", "Моя семья / близкие", "Я")
+
+UPDATE_QUESTIONS: list[Question] = []
+for sphere in SPHERES:
+    UPDATE_QUESTIONS.extend(
+        [
+            Question(
+                f"rating_{sphere}",
+                f"{sphere}: поставь оценку 1-10. Сравни с прошлым месяцем и коротко опиши, как себя чувствуешь.",
+                "Часть 1. Оценка трёх сфер",
+            ),
+            Question(
+                f"changed_{sphere}",
+                f"{sphere}: что конкретно изменилось с прошлого раза?",
+                "Часть 1. Оценка трёх сфер",
+            ),
+            Question(
+                f"impact_{sphere}",
+                f"{sphere}: что дало наибольший вклад в эту оценку?",
+                "Часть 1. Оценка трёх сфер",
+            ),
+            Question(
+                f"delta_{sphere}",
+                f"{sphere}: если оценка упала — что произошло? Если выросла — за счёт чего?",
+                "Часть 1. Оценка трёх сфер",
+            ),
+        ]
+    )
+
+for sphere in SPHERES:
+    UPDATE_QUESTIONS.extend(
+        [
+            Question(
+                f"past_plan_{sphere}",
+                f"{sphere}: что ты планировал на прошедший период и что получил по факту?",
+                "Часть 2. Ретроспектива",
+            ),
+            Question(
+                f"past_action_{sphere}",
+                f"{sphere}: какое действие дало максимальный результат?",
+                "Часть 2. Ретроспектива",
+            ),
+            Question(
+                f"past_failed_{sphere}",
+                f"{sphere}: что не сработало и почему?",
+                "Часть 2. Ретроспектива",
+            ),
+            Question(
+                f"next_excellent_{sphere}",
+                f"{sphere}: что будет означать для тебя «отлично» через месяц?",
+                "Часть 2. Следующий период",
+            ),
+            Question(
+                f"next_control_{sphere}",
+                f"{sphere}: что в твоей власти, а что нет?",
+                "Часть 2. Следующий период",
+            ),
+            Question(
+                f"next_factors_{sphere}",
+                f"{sphere}: какие внешние факторы сейчас поддерживают или мешают?",
+                "Часть 2. Следующий период",
+            ),
+        ]
+    )
+
+UPDATE_QUESTIONS.extend(
+    [
+        Question(
+            "main_request_draft",
+            "Сформулируй главный запрос в формате «Как мне ... ?» — один вопрос, до 10 слов, в зоне твоего контроля.",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_context",
+            "Опиши суть запроса в 2-3 предложениях: почему это важно и на какие сферы влияет?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_money",
+            "Денежный эквивалент проблемы: ущерб/упущенная прибыль в год и сколько ты готов заплатить за лучшее решение?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_ideal",
+            "Идеальный конечный результат: как выглядит идеально разрешённая ситуация?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_history",
+            "Контекст: как и когда начала развиваться ситуация? Что будет, если ничего не менять?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_tried",
+            "Что уже пробовал?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_options",
+            "Назови минимум 3 варианта решения.",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_best",
+            "Оптимальный вариант сейчас: если бы не обсуждал с группой, как бы действовал?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_stop",
+            "Стоп-фактор: что останавливает от реализации оптимального решения?",
+            "Часть 3. Главный запрос",
+        ),
+        Question(
+            "main_request_help",
+            "Какая помощь нужна от группы? Начни фразой: «Поделитесь опытом, как вы...»",
+            "Часть 3. Главный запрос",
+        ),
+    ]
+)
+
+for sphere in SPHERES:
+    UPDATE_QUESTIONS.append(
+        Question(
+            f"annual_goal_{sphere}",
+            f"{sphere}: какая годовая цель и как сегодняшний запрос с ней связан?",
+            "Часть 4. Связь с годовыми целями",
+        )
+    )
+
+UPDATE_QUESTIONS.extend(
+    [
+        Question(
+            "meeting_insights",
+            "На встрече: какие ключевые инсайты и мысли хочешь фиксировать, пока слушаешь других?",
+            "Часть 5. Личный план действий",
+        ),
+        Question(
+            "meeting_questions",
+            "На какие вопросы теперь будешь искать ответ?",
+            "Часть 5. Личный план действий",
+        ),
+        Question(
+            "meeting_others",
+            "Что хочешь вынести из запросов других участников?",
+            "Часть 5. Личный план действий",
+        ),
+        Question(
+            "meeting_gratitude",
+            "Благодарность себе и другим: что важно не забыть проговорить?",
+            "Часть 5. Личный план действий",
+        ),
+        Question(
+            "next_actions",
+            "Действия в ближайшее время: глагол совершенного вида, где/когда/с помощью чего/какой результат, плюс срок.",
+            "Часть 5. Личный план действий",
+        ),
+    ]
+)
+
+HEALTH_QUESTIONS = [
+    Question("energy", "Оцени энергию форум-группы после встречи по шкале 1-10. Почему так?", "Здоровье группы"),
+    Question("trust", "Оцени доверие и безопасность в группе по шкале 1-10. Что повлияло?", "Здоровье группы"),
+    Question("depth", "Насколько глубокой была работа с запросами? Где ушли в поверхность?", "Здоровье группы"),
+    Question("rules", "Соблюдалось ли правило форума: без советов, только личный опыт от первого лица?", "Здоровье группы"),
+    Question("participation", "Кто включался сильнее всего, а кто выпадал или молчал?", "Здоровье группы"),
+    Question("tension", "Были ли напряжения, скрытые конфликты, невыраженные темы?", "Здоровье группы"),
+    Question("value", "Что было самым ценным для группы на этой встрече?", "Здоровье группы"),
+    Question("improve", "Что стоит усилить к следующему форуму?", "Здоровье группы"),
+]
+
+
+def now_iso() -> str:
+    return datetime.now(TZ).isoformat(timespec="seconds")
+
+
+def esc(value: Any) -> str:
+    return html.escape(str(value or ""), quote=False)
+
+
+def clip(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def parse_time(value: str) -> time:
+    hour, minute = value.split(":", 1)
+    return time(int(hour), int(minute), tzinfo=TZ)
+
+
+def parse_forum_date(value: str, base: date | None = None) -> date | None:
+    value = value.strip()
+    if not value:
+        return None
+    settings = {
+        "PREFER_DATES_FROM": "future",
+        "RELATIVE_BASE": datetime.combine(base or datetime.now(TZ).date(), time(12, 0), tzinfo=TZ),
+        "RETURN_AS_TIMEZONE_AWARE": False,
+    }
+    parsed = dateparser.parse(value, languages=["ru", "en"], settings=settings)
+    if parsed is None:
+        return None
+    return parsed.date()
+
+
+def is_profile_complete(user: dict[str, Any]) -> bool:
+    return all(
+        user.get(field)
+        for field in ("business_club", "full_name", "forum_group", "community_chat", "next_forum_date")
+    ) and user.get("keep_files") is not None
+
+
+class Store:
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.init_schema()
+
+    def init_schema(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_user_id INTEGER PRIMARY KEY,
+                chat_id INTEGER NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                business_club TEXT,
+                full_name TEXT,
+                forum_group TEXT,
+                community_chat TEXT,
+                keep_files INTEGER,
+                state TEXT,
+                active_flow TEXT,
+                active_step INTEGER DEFAULT 0,
+                flow_payload TEXT DEFAULT '{}',
+                next_forum_date TEXT,
+                last_offsite_reminder_date TEXT,
+                admin_notified INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS reminder_log (
+                telegram_user_id INTEGER NOT NULL,
+                reminder_type TEXT NOT NULL,
+                reminder_key TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (telegram_user_id, reminder_type, reminder_key)
+            );
+            """
+        )
+        self.conn.commit()
+
+    def ensure_user(self, update: Update) -> dict[str, Any]:
+        tg_user = update.effective_user
+        chat = update.effective_chat
+        assert tg_user is not None and chat is not None
+        existing = self.get_user(tg_user.id)
+        timestamp = now_iso()
+        if existing is None:
+            self.conn.execute(
+                """
+                INSERT INTO users (
+                    telegram_user_id, chat_id, username, first_name, last_name,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tg_user.id,
+                    chat.id,
+                    tg_user.username,
+                    tg_user.first_name,
+                    tg_user.last_name,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE users
+                SET chat_id = ?, username = ?, first_name = ?, last_name = ?, updated_at = ?
+                WHERE telegram_user_id = ?
+                """,
+                (chat.id, tg_user.username, tg_user.first_name, tg_user.last_name, timestamp, tg_user.id),
+            )
+        self.conn.commit()
+        return self.get_user(tg_user.id) or {}
+
+    def get_user(self, telegram_user_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE telegram_user_id = ?",
+            (telegram_user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def complete_users(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM users WHERE full_name IS NOT NULL").fetchall()
+        return [dict(row) for row in rows]
+
+    def update_user(self, telegram_user_id: int, **fields: Any) -> dict[str, Any]:
+        fields["updated_at"] = now_iso()
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = list(fields.values()) + [telegram_user_id]
+        self.conn.execute(f"UPDATE users SET {assignments} WHERE telegram_user_id = ?", values)
+        self.conn.commit()
+        return self.get_user(telegram_user_id) or {}
+
+    def set_flow(
+        self,
+        telegram_user_id: int,
+        flow: str | None,
+        step: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.update_user(
+            telegram_user_id,
+            active_flow=flow,
+            active_step=step,
+            flow_payload=json.dumps(payload or {}, ensure_ascii=False),
+            state=None,
+        )
+
+    def payload(self, user: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return json.loads(user.get("flow_payload") or "{}")
+        except json.JSONDecodeError:
+            return {}
+
+    def log_interaction(self, telegram_user_id: int | None, kind: str) -> None:
+        self.conn.execute(
+            "INSERT INTO interactions (telegram_user_id, kind, created_at) VALUES (?, ?, ?)",
+            (telegram_user_id, kind, now_iso()),
+        )
+        self.conn.commit()
+
+    def reminder_sent(self, telegram_user_id: int, reminder_type: str, reminder_key: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM reminder_log
+            WHERE telegram_user_id = ? AND reminder_type = ? AND reminder_key = ?
+            """,
+            (telegram_user_id, reminder_type, reminder_key),
+        ).fetchone()
+        return row is not None
+
+    def mark_reminder(self, telegram_user_id: int, reminder_type: str, reminder_key: str) -> None:
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO reminder_log
+            (telegram_user_id, reminder_type, reminder_key, sent_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (telegram_user_id, reminder_type, reminder_key, now_iso()),
+        )
+        self.conn.commit()
+
+    def stats(self) -> dict[str, int]:
+        users = self.conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+        interactions = self.conn.execute("SELECT COUNT(*) AS n FROM interactions").fetchone()["n"]
+        complete = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE full_name IS NOT NULL AND business_club IS NOT NULL"
+        ).fetchone()["n"]
+        return {"users": users, "complete_users": complete, "interactions": interactions}
+
+    def delete_user(self, telegram_user_id: int) -> None:
+        self.conn.execute("DELETE FROM reminder_log WHERE telegram_user_id = ?", (telegram_user_id,))
+        self.conn.execute("DELETE FROM interactions WHERE telegram_user_id = ?", (telegram_user_id,))
+        self.conn.execute("DELETE FROM users WHERE telegram_user_id = ?", (telegram_user_id,))
+        self.conn.commit()
+        for directory in (UPLOADS_DIR / str(telegram_user_id), UPDATES_DIR / str(telegram_user_id)):
+            if directory.exists():
+                shutil.rmtree(directory)
+
+
+store = Store(DB_PATH)
+
+
+def main_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Подготовить апдейт", callback_data="menu:update"),
+                InlineKeyboardButton("Дата форума", callback_data="menu:date"),
+            ],
+            [
+                InlineKeyboardButton("Health check", callback_data="menu:health"),
+                InlineKeyboardButton("О боте", callback_data="menu:about"),
+            ],
+            [
+                InlineKeyboardButton("Ищу психолога", url=PSYCHOLOGIST_URL),
+                InlineKeyboardButton("Ищу коуча", url=COACH_URL),
+            ],
+            [InlineKeyboardButton("Связаться с автором", callback_data="menu:author")],
+            [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
+        ]
+    )
+
+
+def cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")]])
+
+
+def flow_keyboard(show_next: bool = False) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    if show_next:
+        buttons.append([InlineKeyboardButton("Далее", callback_data="flow:next")])
+    buttons.append([InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def safe_send(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int | str,
+    text: str,
+    **kwargs: Any,
+) -> bool:
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=clip(text),
+            parse_mode=kwargs.pop("parse_mode", ParseMode.HTML),
+            **kwargs,
+        )
+        return True
+    except TelegramError as exc:
+        log.warning("send_message failed chat_id=%s error=%s", chat_id, exc)
+        return False
+
+
+async def reply(update: Update, text: str, **kwargs: Any) -> None:
+    if update.effective_message is None:
+        return
+    await update.effective_message.reply_text(
+        clip(text),
+        parse_mode=kwargs.pop("parse_mode", ParseMode.HTML),
+        **kwargs,
+    )
+
+
+async def cmd_getid(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    store.log_interaction(update.effective_user.id if update.effective_user else None, "getid")
+    await reply(
+        update,
+        f"<b>Chat ID</b>: <code>{esc(update.effective_chat.id)}</code>\n\n"
+        "Для админ-уведомлений добавь в .env:\n"
+        f"<code>ADMIN_CHAT_ID={esc(update.effective_chat.id)}</code>",
+    )
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "start")
+    if is_profile_complete(user):
+        await show_menu(update)
+        return
+    await start_onboarding(update, context, user)
+
+
+async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> None:
+    text = (
+        "<b>ForumUpdateHelperBot</b>\n\n"
+        "Я помогу подготовиться к форуму по новой методике X-Competence: "
+        "проведу по вопросам апдейта, напомню о дате форума, после встречи "
+        "соберу здоровье группы и раз в три месяца предложу личную стратегическую "
+        "сессию вне города.\n\n"
+        "Можно отвечать текстом или голосом. Голос я транскрибирую и покажу текст."
+    )
+    await reply(update, text)
+    store.update_user(user["telegram_user_id"], state="onboarding:business_club")
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(club, callback_data=f"club:{club}")] for club in BUSINESS_CLUBS]
+    )
+    await reply(update, "<b>Шаг 1/5</b>\nВыбери бизнес-клуб.", reply_markup=keyboard)
+
+
+async def show_menu(update: Update) -> None:
+    await reply(
+        update,
+        "<b>Меню</b>\nВыбери действие. Частые кнопки также закреплены внизу чата.",
+        reply_markup=MAIN_KEYBOARD,
+    )
+    await reply(update, "Быстрые действия:", reply_markup=main_inline_keyboard())
+
+
+async def cmd_menu(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "menu")
+    if not is_profile_complete(user):
+        await start_onboarding(update, _context, user)
+        return
+    await show_menu(update)
+
+
+async def cmd_about(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "about")
+    await send_about(update)
+
+
+async def send_about(update: Update) -> None:
+    await reply(
+        update,
+        "<b>О боте</b>\n\n"
+        "Я готовлю форумный апдейт в формате X-Competence: три сферы жизни, "
+        "ретроспектива, следующий период, один глубокий запрос и личный план действий.\n\n"
+        "Что умею:\n"
+        "• спрашивать дату следующего форума при старте;\n"
+        "• за 3 дня до форума начинать подготовку с первого вопроса апдейта;\n"
+        "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
+        "• проводить весь апдейт вопрос за вопросом с кнопкой «Далее» и счётчиком;\n"
+        "• принимать голосовые ответы и показывать транскрипт;\n"
+        "• на следующее утро после форума спрашивать здоровье группы;\n"
+        "• раз в три месяца напоминать о личной стратегической сессии в отеле;\n"
+        "• удалить твои данные с сервера по кнопке.",
+        reply_markup=main_inline_keyboard(),
+    )
+
+
+async def cmd_cancel(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.set_flow(user["telegram_user_id"], None)
+    store.update_user(user["telegram_user_id"], state=None)
+    store.log_interaction(user["telegram_user_id"], "cancel")
+    await reply(update, "Сценарий остановлен. Возвращаю меню.", reply_markup=MAIN_KEYBOARD)
+
+
+async def cmd_next_forum(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "next_forum")
+    await ask_next_forum_date(update, user)
+
+
+async def ask_next_forum_date(update: Update, user: dict[str, Any]) -> None:
+    store.update_user(user["telegram_user_id"], state="awaiting_next_forum_date", active_flow=None)
+    await reply(
+        update,
+        "<b>Когда следующий форум?</b>\n\n"
+        "Напиши дату: например, <code>23.06.2026</code>, <code>2026-06-23</code> или голосом.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def cmd_prepare(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "prepare_update")
+    await start_update_flow(update, user)
+
+
+async def cmd_health(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "health")
+    await start_health_flow(update, user)
+
+
+async def cmd_stats(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    if ADMIN_CHAT_ID and update.effective_chat.id != ADMIN_CHAT_ID:
+        await reply(update, "Статистика доступна только администратору.")
+        return
+    stats = store.stats()
+    await reply(
+        update,
+        "<b>Статистика</b>\n"
+        f"Пользователей всего: <b>{stats['users']}</b>\n"
+        f"Заполнили профиль: <b>{stats['complete_users']}</b>\n"
+        f"Обращений/действий: <b>{stats['interactions']}</b>",
+    )
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    user = store.ensure_user(update)
+    data = query.data or ""
+    store.log_interaction(user["telegram_user_id"], f"callback:{data.split(':', 1)[0]}")
+
+    if data.startswith("club:"):
+        await handle_onboarding_text(update, context, data.split(":", 1)[1])
+    elif data.startswith("keep:"):
+        await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
+    elif data == "menu:update":
+        await start_update_flow(update, user)
+    elif data == "menu:date":
+        await ask_next_forum_date(update, user)
+    elif data == "menu:health":
+        await start_health_flow(update, user)
+    elif data == "menu:about":
+        await send_about(update)
+    elif data == "menu:author":
+        await reply(update, esc(AUTHOR_TEXT))
+    elif data == "delete:ask":
+        await ask_delete_data(update)
+    elif data == "delete:confirm":
+        await delete_my_data(update, user)
+    elif data == "delete:cancel":
+        await reply(update, "Ок, данные оставил.", reply_markup=MAIN_KEYBOARD)
+    elif data == "flow:cancel":
+        store.set_flow(user["telegram_user_id"], None)
+        store.update_user(user["telegram_user_id"], state=None)
+        await reply(update, "Сценарий остановлен.", reply_markup=MAIN_KEYBOARD)
+    elif data == "flow:next":
+        await handle_flow_next(update, context, user)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    text = update.effective_message.text if update.effective_message else ""
+    store.log_interaction(user["telegram_user_id"], "text")
+    await route_text(update, context, user, text.strip())
+
+
+async def route_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    text: str,
+) -> None:
+    if not text:
+        await reply(update, "Пустой ответ не записал. Напиши текстом или голосом.")
+        return
+
+    lower = text.casefold()
+    shortcuts = {
+        "подготовить апдейт": lambda: start_update_flow(update, user),
+        "дата следующего форума": lambda: ask_next_forum_date(update, user),
+        "здоровье форум-группы": lambda: start_health_flow(update, user),
+        "о боте": lambda: send_about(update),
+        "ищу психолога": lambda: reply(update, f'<a href="{PSYCHOLOGIST_URL}">Рекомендованные психологи</a>'),
+        "ищу коуча": lambda: reply(update, f'<a href="{COACH_URL}">Коучи 5 Prism</a>'),
+        "связаться с автором": lambda: reply(update, esc(AUTHOR_TEXT)),
+        "удалить мои данные": lambda: ask_delete_data(update),
+    }
+    if lower in shortcuts and not user.get("state") and not user.get("active_flow"):
+        await shortcuts[lower]()
+        return
+
+    if not is_profile_complete(user):
+        await handle_onboarding_text(update, context, text)
+        return
+
+    if user.get("state") == "awaiting_next_forum_date":
+        await handle_next_forum_date(update, context, user, text)
+        return
+
+    if user.get("state") == "flow:await_next" and user.get("active_flow"):
+        await reply(update, "Ответ записан. Нажми «Далее», чтобы перейти к следующему вопросу.", reply_markup=flow_keyboard(True))
+        return
+
+    if user.get("active_flow") == "update":
+        await handle_question_answer(update, context, user, text, UPDATE_QUESTIONS)
+        return
+
+    if user.get("active_flow") == "health":
+        await handle_question_answer(update, context, user, text, HEALTH_QUESTIONS)
+        return
+
+    await reply(
+        update,
+        "Принял. Сейчас активного сценария нет — выбери действие в меню.",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+async def handle_onboarding_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+) -> None:
+    user = store.ensure_user(update)
+    state = user.get("state") or "onboarding:business_club"
+
+    if state == "onboarding:business_club":
+        club = text.strip()
+        if club not in BUSINESS_CLUBS:
+            club = club[:80]
+        store.update_user(user["telegram_user_id"], business_club=club, state="onboarding:full_name")
+        await reply(update, "<b>Шаг 2/5</b>\nНапиши Фамилию Имя.")
+        return
+
+    if state == "onboarding:full_name":
+        store.update_user(user["telegram_user_id"], full_name=text[:160], state="onboarding:forum_group")
+        await reply(update, "<b>Шаг 3/5</b>\nКак называется твоя форум-группа?")
+        return
+
+    if state == "onboarding:forum_group":
+        store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:community_chat")
+        await reply(
+            update,
+            "<b>Шаг 4/5</b>\n"
+            "Куда отправлять отчёты о здоровье форум-группы?\n\n"
+            "Пришли <code>@username</code> чата/канала или numeric chat_id. "
+            "Бот должен быть добавлен туда и иметь право писать.",
+        )
+        return
+
+    if state == "onboarding:community_chat":
+        store.update_user(user["telegram_user_id"], community_chat=text[:180], state="onboarding:keep_files")
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Сохранять", callback_data="keep:1"),
+                    InlineKeyboardButton("Удалять", callback_data="keep:0"),
+                ]
+            ]
+        )
+        await reply(
+            update,
+            "<b>Шаг 5/6</b>\n"
+            "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
+            reply_markup=keyboard,
+        )
+        return
+
+    if state == "onboarding:keep_files":
+        keep_files = text.strip().casefold() in {"да", "сохранять", "save", "yes", "y", "1"}
+        user = store.update_user(
+            user["telegram_user_id"],
+            keep_files=1 if keep_files else 0,
+            state="onboarding:next_forum_date",
+        )
+        await reply(
+            update,
+            "<b>Шаг 6/6</b>\n"
+            "Когда следующий форум? Напиши дату: например, <code>23.06.2026</code> "
+            "или <code>2026-06-23</code>.",
+        )
+        return
+
+    if state == "onboarding:next_forum_date":
+        forum_date = parse_forum_date(text)
+        if forum_date is None:
+            await reply(update, "Не распознал дату. Попробуй так: <code>23.06.2026</code>.")
+            return
+        user = store.update_user(
+            user["telegram_user_id"],
+            next_forum_date=forum_date.isoformat(),
+            state=None,
+        )
+        await reply(
+            update,
+            f"Профиль готов. Следующий форум: <b>{forum_date.strftime('%d.%m.%Y')}</b>.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        await notify_admin_new_user(context, user)
+        await send_about(update)
+
+
+async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> None:
+    if not ADMIN_CHAT_ID or user.get("admin_notified"):
+        return
+    ok = await safe_send(
+        context,
+        ADMIN_CHAT_ID,
+        "<b>Новый пользователь ForumUpdateHelperBot</b>\n"
+        f"ФИ: <b>{esc(user.get('full_name'))}</b>\n"
+        f"Бизнес-клуб: <b>{esc(user.get('business_club'))}</b>",
+    )
+    if ok:
+        store.update_user(user["telegram_user_id"], admin_notified=1)
+
+
+async def handle_next_forum_date(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    text: str,
+) -> None:
+    forum_date = parse_forum_date(text)
+    if forum_date is None:
+        await reply(update, "Не распознал дату. Попробуй так: <code>23.06.2026</code>.")
+        return
+    user = store.update_user(user["telegram_user_id"], next_forum_date=forum_date.isoformat(), state=None)
+    await reply(
+        update,
+        f"Запомнил: следующий форум <b>{forum_date.strftime('%d.%m.%Y')}</b>.\n\n"
+        "Напомню об апдейте заранее и на следующее утро после форума спрошу здоровье группы.",
+        reply_markup=MAIN_KEYBOARD,
+    )
+    if is_profile_complete(user):
+        await notify_admin_new_user(context, user)
+
+
+async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
+    if not is_profile_complete(user):
+        await start_onboarding(update, None, user)  # type: ignore[arg-type]
+        return
+    user = store.set_flow(user["telegram_user_id"], "update", 0, {"answers": {}})
+    await reply(
+        update,
+        "<b>Начинаем апдейт X-Competence</b>\n\n"
+        "Будем идти по всем вопросам. Отвечай коротко или голосом. "
+        "В конце я соберу Markdown-файл апдейта.",
+        reply_markup=cancel_keyboard(),
+    )
+    await ask_current_question(update, user, UPDATE_QUESTIONS)
+
+
+async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
+    if not is_profile_complete(user):
+        await start_onboarding(update, None, user)  # type: ignore[arg-type]
+        return
+    user = store.set_flow(user["telegram_user_id"], "health", 0, {"answers": {}})
+    await reply(
+        update,
+        "<b>Health check форум-группы</b>\n\n"
+        "Отвечай честно и конкретно. В конце я соберу отчёт и попробую отправить "
+        "его в указанный Telegram community.",
+        reply_markup=cancel_keyboard(),
+    )
+    await ask_current_question(update, user, HEALTH_QUESTIONS)
+
+
+def question_message(question: Question, step: int, total: int) -> str:
+    return (
+        f"<b>{esc(question.section)}</b>\n"
+        f"Заполнено: <b>{step}/{total}</b>\n"
+        f"Вопрос {step + 1}/{total}\n\n"
+        f"{esc(question.prompt)}"
+    )
+
+
+async def ask_current_question(
+    update: Update,
+    user: dict[str, Any],
+    questions: list[Question],
+) -> None:
+    step = int(user.get("active_step") or 0)
+    if step >= len(questions):
+        return
+    question = questions[step]
+    store.update_user(user["telegram_user_id"], state=None)
+    await reply(
+        update,
+        question_message(question, step, len(questions)),
+        reply_markup=flow_keyboard(False),
+    )
+
+
+async def handle_flow_next(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+) -> None:
+    flow = user.get("active_flow")
+    if flow == "update":
+        questions = UPDATE_QUESTIONS
+    elif flow == "health":
+        questions = HEALTH_QUESTIONS
+    else:
+        await reply(update, "Активного сценария нет. Выбери действие в меню.", reply_markup=MAIN_KEYBOARD)
+        return
+    if user.get("state") != "flow:await_next":
+        await ask_current_question(update, user, questions)
+        return
+    user = store.update_user(user["telegram_user_id"], state=None)
+    if int(user.get("active_step") or 0) >= len(questions):
+        await finish_flow(update, context, user)
+        return
+    await ask_current_question(update, user, questions)
+
+
+async def handle_question_answer(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    text: str,
+    questions: list[Question],
+) -> None:
+    step = int(user.get("active_step") or 0)
+    payload = store.payload(user)
+    answers = payload.setdefault("answers", {})
+    if step >= len(questions):
+        await finish_flow(update, context, user)
+        return
+
+    question = questions[step]
+    answers[question.key] = text
+    next_step = step + 1
+    user = store.update_user(
+        user["telegram_user_id"],
+        active_step=next_step,
+        flow_payload=json.dumps(payload, ensure_ascii=False),
+        state="flow:await_next",
+    )
+    if next_step >= len(questions):
+        await finish_flow(update, context, user)
+        return
+
+    await reply(
+        update,
+        f"Записал. Заполнено: <b>{next_step}/{len(questions)}</b>.",
+        reply_markup=flow_keyboard(True),
+    )
+
+
+async def finish_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+) -> None:
+    flow = user.get("active_flow")
+    payload = store.payload(user)
+    answers = payload.get("answers", {})
+    if flow == "update":
+        await finish_update_flow(update, context, user, answers)
+    elif flow == "health":
+        await finish_health_flow(update, context, user, answers)
+    store.set_flow(user["telegram_user_id"], None)
+
+
+def answers_by_section(answers: dict[str, str], questions: list[Question]) -> dict[str, list[tuple[str, str]]]:
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for question in questions:
+        grouped.setdefault(question.section, []).append((question.prompt, answers.get(question.key, "")))
+    return grouped
+
+
+def build_update_markdown(user: dict[str, Any], answers: dict[str, str], reflection: str = "") -> str:
+    forum_date = user.get("next_forum_date") or "не указана"
+    lines = [
+        f"# Форум-апдейт — {user.get('forum_group') or 'форум-группа'}",
+        "",
+        f"- Участник: {user.get('full_name') or ''}",
+        f"- Бизнес-клуб: {user.get('business_club') or ''}",
+        f"- Дата форума: {forum_date}",
+        f"- Создано: {datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
+        "",
+    ]
+    for section, items in answers_by_section(answers, UPDATE_QUESTIONS).items():
+        lines.extend([f"## {section}", ""])
+        for prompt, answer in items:
+            lines.extend([f"**{prompt}**", "", answer.strip() or "_Нет ответа_", ""])
+    if reflection:
+        lines.extend(["## Короткая менторская сводка", "", reflection.strip(), ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+async def maybe_reflect_update(answers: dict[str, str]) -> str:
+    if not (_openai and OPENAI_REFLECTION_ENABLED):
+        return ""
+
+    compact_answers = "\n".join(
+        f"- {q.prompt}: {answers.get(q.key, '')}" for q in UPDATE_QUESTIONS if answers.get(q.key)
+    )
+    prompt = (
+        "Ты MCC-level коуч и бизнес-ментор. Дай короткую сводку форумного "
+        "апдейта на русском: 3 главных наблюдения, 3 уточняющих вопроса, 3 "
+        "риска самообмана. Без советов группе, только подготовка автора.\n\n"
+        + compact_answers[:16000]
+    )
+
+    def _call() -> str:
+        response = _openai.responses.create(
+            model=OPENAI_MODEL,
+            input=prompt,
+            max_output_tokens=900,
+            text={"verbosity": "low"},
+        )
+        return extract_response_text(response)
+
+    try:
+        return await asyncio.to_thread(_call)
+    except Exception as exc:
+        log.warning("OpenAI reflection failed: %s", exc)
+        return ""
+
+
+def extract_response_text(response: Any) -> str:
+    text = getattr(response, "output_text", None)
+    if text:
+        return str(text).strip()
+    chunks: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        content_items = item.get("content", []) if isinstance(item, dict) else getattr(item, "content", [])
+        for content in content_items or []:
+            value = content.get("text") if isinstance(content, dict) else getattr(content, "text", None)
+            if value:
+                chunks.append(str(value))
+    return "\n".join(chunks).strip()
+
+
+async def finish_update_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    answers: dict[str, str],
+) -> None:
+    await reply(update, "Собираю апдейт в Markdown. Если включена AI-сводка, добавлю короткую менторскую выжимку.")
+    reflection = await maybe_reflect_update(answers)
+    content = build_update_markdown(user, answers, reflection)
+    user_dir = UPDATES_DIR / str(user["telegram_user_id"])
+    user_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
+    path = user_dir / filename
+    path.write_text(content, encoding="utf-8")
+    if update.effective_message:
+        with path.open("rb") as fh:
+            await update.effective_message.reply_document(
+                document=fh,
+                filename=filename,
+                caption="Готово: форумный апдейт X-Competence.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+    if not user.get("keep_files"):
+        path.unlink(missing_ok=True)
+    await reply(update, "После форума я спрошу здоровье группы на следующее утро.", reply_markup=MAIN_KEYBOARD)
+
+
+def build_health_report(user: dict[str, Any], answers: dict[str, str]) -> str:
+    lines = [
+        f"<b>Здоровье форум-группы: {esc(user.get('forum_group'))}</b>",
+        f"Участник: {esc(user.get('full_name'))}",
+        f"Бизнес-клуб: {esc(user.get('business_club'))}",
+        f"Дата отчёта: {datetime.now(TZ).strftime('%d.%m.%Y %H:%M')}",
+        "",
+    ]
+    for question in HEALTH_QUESTIONS:
+        lines.extend([f"<b>{esc(question.prompt)}</b>", esc(answers.get(question.key, "Нет ответа")), ""])
+    return "\n".join(lines).strip()
+
+
+async def finish_health_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    answers: dict[str, str],
+) -> None:
+    report = build_health_report(user, answers)
+    await reply(update, report, reply_markup=MAIN_KEYBOARD)
+    community_chat = (user.get("community_chat") or "").strip()
+    if community_chat:
+        ok = await safe_send(context, community_chat, report)
+        if ok:
+            await reply(update, f"Отправил отчёт в {esc(community_chat)}.")
+        else:
+            await reply(
+                update,
+                "Не смог отправить отчёт в community chat. Проверь, что бот добавлен в чат/канал "
+                "и имеет право писать. Отчёт выше можно переслать вручную.",
+            )
+    await ask_next_forum_date(update, user)
+
+
+async def ask_delete_data(update: Update) -> None:
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Да, удалить", callback_data="delete:confirm"),
+                InlineKeyboardButton("Отмена", callback_data="delete:cancel"),
+            ]
+        ]
+    )
+    await reply(
+        update,
+        "<b>Удалить мои данные с сервера?</b>\n\n"
+        "Я удалю профиль, даты форума, состояние сценариев, историю напоминаний, "
+        "счётчики обращений и сохранённые файлы. Уже отправленные сообщения в Telegram "
+        "удалить не смогу.",
+        reply_markup=keyboard,
+    )
+
+
+async def delete_my_data(update: Update, user: dict[str, Any]) -> None:
+    store.delete_user(user["telegram_user_id"])
+    await reply(update, "Готово. Данные удалены с сервера. Чтобы начать заново, отправь /start.")
+
+
+async def handle_voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "audio")
+    if _openai is None:
+        await reply(update, "Голос сейчас недоступен: на сервере не задан OPENAI_API_KEY. Ответь текстом.")
+        return
+    message = update.effective_message
+    if message is None:
+        return
+    await message.chat.send_action(ChatAction.TYPING)
+    tg_file = None
+    original_name = "voice.ogg"
+    if message.voice:
+        tg_file = await message.voice.get_file()
+        original_name = "voice.ogg"
+    elif message.audio:
+        tg_file = await message.audio.get_file()
+        original_name = message.audio.file_name or "audio.ogg"
+    if tg_file is None:
+        return
+
+    suffix = Path(original_name).suffix.lower()
+    if suffix in {"", ".oga", ".opus"}:
+        suffix = ".ogg"
+
+    target_dir = UPLOADS_DIR / str(user["telegram_user_id"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if user.get("keep_files"):
+        audio_path = target_dir / f"{datetime.now(TZ).strftime('%Y%m%d-%H%M%S')}{suffix}"
+    else:
+        tmp = tempfile.NamedTemporaryFile(prefix="forum-audio-", suffix=suffix, delete=False)
+        tmp.close()
+        audio_path = Path(tmp.name)
+
+    try:
+        await tg_file.download_to_drive(custom_path=str(audio_path))
+        transcript = await transcribe_audio(audio_path)
+    except Exception as exc:
+        log.exception("audio transcription failed")
+        await reply(
+            update,
+            "Не смог распознать голос. Обработчик: OpenAI transcription, "
+            f"тип файла: {esc(suffix)}, ошибка: {esc(type(exc).__name__)}: {esc(exc)}. "
+            "Можно ответить текстом.",
+        )
+        return
+    finally:
+        if not user.get("keep_files"):
+            audio_path.unlink(missing_ok=True)
+
+    await reply(update, f"<b>Транскрипт</b>\n{esc(transcript)}")
+    fresh_user = store.get_user(user["telegram_user_id"]) or user
+    await route_text(update, context, fresh_user, transcript)
+
+
+async def transcribe_audio(path: Path) -> str:
+    assert _openai is not None
+
+    def _call() -> str:
+        with path.open("rb") as fh:
+            result = _openai.audio.transcriptions.create(
+                model=TRANSCRIBE_MODEL,
+                file=fh,
+                language=TRANSCRIBE_LANGUAGE,
+                prompt=(
+                    "Русская речь участника бизнес-форума. Термины: форум-группа, "
+                    "X-Competence, апдейт, Атланты, Эквиум, К1, Терра, Сколково."
+                ),
+            )
+        return str(getattr(result, "text", "")).strip()
+
+    return await asyncio.to_thread(_call)
+
+
+async def handle_document(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "document")
+    message = update.effective_message
+    if not message or not message.document:
+        return
+    tg_file = await message.document.get_file()
+    filename = re.sub(r"[^A-Za-z0-9А-Яа-яЁё._-]+", "_", message.document.file_name or "file")
+    if user.get("keep_files"):
+        target_dir = UPLOADS_DIR / str(user["telegram_user_id"])
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{datetime.now(TZ).strftime('%Y%m%d-%H%M%S')}-{filename}"
+    else:
+        tmp = tempfile.NamedTemporaryFile(prefix="forum-file-", suffix=Path(filename).suffix, delete=False)
+        tmp.close()
+        path = Path(tmp.name)
+    try:
+        await tg_file.download_to_drive(custom_path=str(path))
+        if user.get("keep_files"):
+            await reply(update, "Файл скачал и сохранил по твоей настройке.")
+        else:
+            await reply(update, "Файл скачал для обработки и удалил по твоей настройке.")
+    finally:
+        if not user.get("keep_files"):
+            path.unlink(missing_ok=True)
+
+
+async def daily_maintenance(context: ContextTypes.DEFAULT_TYPE) -> None:
+    today = datetime.now(TZ).date()
+    for user in store.complete_users():
+        if not is_profile_complete(user):
+            continue
+        try:
+            await maybe_send_forum_reminders(context, user, today)
+            await maybe_send_offsite_reminder(context, user, today)
+        except Exception:
+            log.exception("daily maintenance failed for user_id=%s", user.get("telegram_user_id"))
+
+
+async def maybe_send_forum_reminders(
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    today: date,
+) -> None:
+    value = user.get("next_forum_date")
+    if not value:
+        return
+    forum_date = date.fromisoformat(value)
+    days_left = (forum_date - today).days
+    chat_id = int(user["chat_id"])
+
+    if days_left in PRE_FORUM_REMINDER_DAYS:
+        reminder_type = f"pre_forum_{days_left}"
+        if not store.reminder_sent(user["telegram_user_id"], reminder_type, value):
+            fresh = store.get_user(user["telegram_user_id"]) or user
+            if not fresh.get("active_flow"):
+                store.set_flow(user["telegram_user_id"], "update", 0, {"answers": {}})
+                await safe_send(
+                    context,
+                    chat_id,
+                    "<b>Пора готовить форумный апдейт</b>\n\n"
+                    f"До форума {days_left} дн. Начинаю подготовку по X-Competence. "
+                    "Отвечай текстом или голосом.",
+                )
+                await safe_send(
+                    context,
+                    chat_id,
+                    question_message(UPDATE_QUESTIONS[0], 0, len(UPDATE_QUESTIONS)),
+                    reply_markup=flow_keyboard(False),
+                )
+            else:
+                await safe_send(
+                    context,
+                    chat_id,
+                    "<b>Пора готовить форумный апдейт</b>\n\n"
+                    "У тебя уже открыт другой сценарий. Закончи его или нажми /cancel, "
+                    "потом выбери «Подготовить апдейт».",
+                )
+            store.mark_reminder(user["telegram_user_id"], reminder_type, value)
+
+    if today == forum_date + timedelta(days=1):
+        if not store.reminder_sent(user["telegram_user_id"], "post_forum_health", value):
+            fresh = store.get_user(user["telegram_user_id"]) or user
+            if not fresh.get("active_flow"):
+                store.set_flow(user["telegram_user_id"], "health", 0, {"answers": {}})
+                await safe_send(
+                    context,
+                    chat_id,
+                    "<b>Утро после форума</b>\n\n"
+                    "Давай зафиксируем здоровье форум-группы. Первый вопрос:",
+                )
+                await safe_send(
+                    context,
+                    chat_id,
+                    question_message(HEALTH_QUESTIONS[0], 0, len(HEALTH_QUESTIONS)),
+                    reply_markup=flow_keyboard(False),
+                )
+            else:
+                await safe_send(
+                    context,
+                    chat_id,
+                    "Сегодня нужно пройти health check форум-группы. Закончи текущий сценарий или нажми /cancel.",
+                )
+            store.mark_reminder(user["telegram_user_id"], "post_forum_health", value)
+
+
+async def maybe_send_offsite_reminder(
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    today: date,
+) -> None:
+    last_value = user.get("last_offsite_reminder_date") or user.get("created_at", "")[:10]
+    try:
+        last_date = date.fromisoformat(last_value)
+    except ValueError:
+        last_date = today
+    if (today - last_date).days < OFFSITE_INTERVAL_DAYS:
+        return
+    reminder_key = today.isoformat()
+    if store.reminder_sent(user["telegram_user_id"], "offsite", reminder_key):
+        return
+    await safe_send(
+        context,
+        int(user["chat_id"]),
+        "<b>Квартальный выезд на личную стратсессию</b>\n\n"
+        "Рекомендую забронировать 1-2 дня в отеле вне города. Хороший вариант: "
+        "тихий загородный отель 4-5*, спа/баня, место для прогулки, нормальный стол, "
+        "без плотной социальной программы.\n\n"
+        "Фокус сессии: итоги квартала, 3 сферы, один главный запрос, решения на 90 дней.",
+    )
+    store.mark_reminder(user["telegram_user_id"], "offsite", reminder_key)
+    store.update_user(user["telegram_user_id"], last_offsite_reminder_date=today.isoformat())
+
+
+async def post_init(application: Application) -> None:
+    maintenance_time = parse_time(DAILY_MAINTENANCE_TIME)
+    application.job_queue.run_daily(daily_maintenance, time=maintenance_time, name="daily-maintenance")
+    application.job_queue.run_once(daily_maintenance, when=10, name="startup-maintenance")
+    log.info("ForumUpdateHelperBot started")
+
+
+def build_application() -> Application:
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("about", cmd_about))
+    app.add_handler(CommandHandler("forum", cmd_prepare))
+    app.add_handler(CommandHandler("update", cmd_prepare))
+    app.add_handler(CommandHandler("nextforum", cmd_next_forum))
+    app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("getid", cmd_getid))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_or_audio))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    return app
+
+
+def main() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    UPDATES_DIR.mkdir(parents=True, exist_ok=True)
+    app = build_application()
+    app.run_polling(allowed_updates=["message", "callback_query"])
+
+
+if __name__ == "__main__":
+    main()
