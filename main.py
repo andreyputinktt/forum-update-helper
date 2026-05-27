@@ -742,6 +742,7 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
         "Можно отвечать текстом или голосом. Голос я транскрибирую и покажу текст."
     )
     await reply(update, text)
+    await asyncio.sleep(3)
     store.update_user(user["telegram_user_id"], state="onboarding:business_club")
     await reply(
         update,
