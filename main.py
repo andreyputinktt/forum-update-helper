@@ -76,12 +76,14 @@ log = logging.getLogger("forum_update_helper")
 _openai = OpenAI() if os.getenv("OPENAI_API_KEY") else None
 
 BUSINESS_CLUBS = ("Атланты", "Эквиум", "К1", "Терра", "Сколково", "Другое")
+ONBOARDING_TOTAL_STEPS = 6
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["Подготовить апдейт", "Дата следующего форума"],
-        ["Здоровье форум-группы", "О боте"],
-        ["Режим дневника", "Промпт дневника"],
+        ["Здоровье форум-группы", "Личный кабинет"],
+        ["О боте", "Режим дневника"],
+        ["Промпт дневника"],
         ["Ищу психолога", "Ищу коуча"],
         ["Сделать собственный бот", "Связаться с автором"],
         ["Удалить мои данные"],
@@ -315,10 +317,22 @@ def parse_forum_date(value: str, base: date | None = None) -> date | None:
     return parsed.date()
 
 
+def default_full_name(user: dict[str, Any]) -> str:
+    return f"Участник форума {user.get('telegram_user_id') or 'без имени'}"
+
+
+def default_forum_group(user: dict[str, Any]) -> str:
+    return f"Форум-группа {user.get('telegram_user_id') or 'без названия'}"
+
+
+def default_forum_date() -> date:
+    return datetime.now(TZ).date() + timedelta(days=30)
+
+
 def is_profile_complete(user: dict[str, Any]) -> bool:
     return all(
         user.get(field)
-        for field in ("business_club", "full_name", "forum_group", "community_chat", "next_forum_date")
+        for field in ("business_club", "full_name", "forum_group", "next_forum_date")
     ) and user.get("keep_files") is not None
 
 
@@ -515,12 +529,13 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("Health check", callback_data="menu:health"),
-                InlineKeyboardButton("О боте", callback_data="menu:about"),
+                InlineKeyboardButton("Личный кабинет", callback_data="profile:show"),
             ],
             [
                 InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
                 InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
             ],
+            [InlineKeyboardButton("О боте", callback_data="menu:about")],
             [
                 InlineKeyboardButton("Ищу психолога", url=PSYCHOLOGIST_URL),
                 InlineKeyboardButton("Ищу коуча", url=COACH_URL),
@@ -534,6 +549,17 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("Отменить сценарий", callback_data="flow:cancel")]])
+
+
+def skip_keyboard(field: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data=f"skip:{field}")]])
+
+
+def business_club_keyboard(prefix: str = "club") -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(club, callback_data=f"{prefix}:{club}")] for club in BUSINESS_CLUBS]
+    if prefix == "club":
+        buttons.append([InlineKeyboardButton("Пропустить", callback_data="skip:business_club")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def flow_keyboard(show_next: bool = False) -> InlineKeyboardMarkup:
@@ -603,10 +629,11 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
     )
     await reply(update, text)
     store.update_user(user["telegram_user_id"], state="onboarding:business_club")
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(club, callback_data=f"club:{club}")] for club in BUSINESS_CLUBS]
+    await reply(
+        update,
+        f"<b>Шаг 1/{ONBOARDING_TOTAL_STEPS}</b>\nВыбери бизнес-клуб.",
+        reply_markup=business_club_keyboard(),
     )
-    await reply(update, "<b>Шаг 1/5</b>\nВыбери бизнес-клуб.", reply_markup=keyboard)
 
 
 async def show_menu(update: Update) -> None:
@@ -691,6 +718,12 @@ async def cmd_health(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
     await start_health_flow(update, user)
 
 
+async def cmd_profile(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "profile")
+    await show_profile_cabinet(update, user)
+
+
 async def cmd_diary(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "diary")
@@ -725,12 +758,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_onboarding_text(update, context, data.split(":", 1)[1])
     elif data.startswith("keep:"):
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
+    elif data.startswith("skip:"):
+        await handle_onboarding_skip(update, context, data.split(":", 1)[1])
     elif data == "menu:update":
         await start_update_flow(update, user)
     elif data == "menu:date":
         await ask_next_forum_date(update, user)
     elif data == "menu:health":
         await start_health_flow(update, user)
+    elif data == "profile:show":
+        await show_profile_cabinet(update, user)
+    elif data.startswith("profile:edit:"):
+        await start_profile_edit(update, user, data.rsplit(":", 1)[1])
+    elif data.startswith("profile:club:"):
+        updated = store.update_user(user["telegram_user_id"], business_club=data.split(":", 2)[2], state=None)
+        await reply(update, "Бизнес-клуб обновлён.")
+        await show_profile_cabinet(update, updated)
+    elif data.startswith("profile:keep:"):
+        updated = store.update_user(
+            user["telegram_user_id"],
+            keep_files=1 if data.endswith("1") else 0,
+            state=None,
+        )
+        await reply(update, "Настройка хранения файлов обновлена.")
+        await show_profile_cabinet(update, updated)
+    elif data == "profile:clear_community":
+        updated = store.update_user(user["telegram_user_id"], community_chat="", state=None)
+        await reply(update, "Telegram community очищен. Отчёты останутся в личном чате.")
+        await show_profile_cabinet(update, updated)
     elif data == "menu:about":
         await send_about(update)
     elif data == "menu:author":
@@ -780,6 +835,7 @@ async def route_text(
         "подготовить апдейт": lambda: start_update_flow(update, user),
         "дата следующего форума": lambda: ask_next_forum_date(update, user),
         "здоровье форум-группы": lambda: start_health_flow(update, user),
+        "личный кабинет": lambda: show_profile_cabinet(update, user),
         "о боте": lambda: send_about(update),
         "режим дневника": lambda: show_diary_mode_menu(update, user),
         "промпт дневника": lambda: start_diary_prompt_setup(update, user, enable=True),
@@ -807,6 +863,10 @@ async def route_text(
 
     if user.get("state") == "diary:prompt":
         await save_diary_prompt(update, user, text)
+        return
+
+    if str(user.get("state") or "").startswith("profile:"):
+        await handle_profile_edit_text(update, user, text)
         return
 
     if user.get("state") == "flow:await_next" and user.get("active_flow"):
@@ -845,22 +905,31 @@ async def handle_onboarding_text(
         if club not in BUSINESS_CLUBS:
             club = club[:80]
         store.update_user(user["telegram_user_id"], business_club=club, state="onboarding:full_name")
-        await reply(update, "<b>Шаг 2/5</b>\nНапиши Фамилию Имя.")
+        await reply(
+            update,
+            f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
+            reply_markup=skip_keyboard("full_name"),
+        )
         return
 
     if state == "onboarding:full_name":
         store.update_user(user["telegram_user_id"], full_name=text[:160], state="onboarding:forum_group")
-        await reply(update, "<b>Шаг 3/5</b>\nКак называется твоя форум-группа?")
+        await reply(
+            update,
+            f"<b>Шаг 3/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
+            reply_markup=skip_keyboard("forum_group"),
+        )
         return
 
     if state == "onboarding:forum_group":
         store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:community_chat")
         await reply(
             update,
-            "<b>Шаг 4/5</b>\n"
+            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Куда отправлять отчёты о здоровье форум-группы?\n\n"
             "Пришли <code>@username</code> чата/канала или numeric chat_id. "
             "Бот должен быть добавлен туда и иметь право писать.",
+            reply_markup=skip_keyboard("community_chat"),
         )
         return
 
@@ -871,12 +940,13 @@ async def handle_onboarding_text(
                 [
                     InlineKeyboardButton("Сохранять", callback_data="keep:1"),
                     InlineKeyboardButton("Удалять", callback_data="keep:0"),
-                ]
+                ],
+                [InlineKeyboardButton("Пропустить", callback_data="skip:keep_files")],
             ]
         )
         await reply(
             update,
-            "<b>Шаг 5/6</b>\n"
+            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
             reply_markup=keyboard,
         )
@@ -891,9 +961,10 @@ async def handle_onboarding_text(
         )
         await reply(
             update,
-            "<b>Шаг 6/6</b>\n"
+            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Когда следующий форум? Напиши дату: например, <code>23.06.2026</code> "
             "или <code>2026-06-23</code>.",
+            reply_markup=skip_keyboard("next_forum_date"),
         )
         return
 
@@ -914,6 +985,108 @@ async def handle_onboarding_text(
         )
         await notify_admin_new_user(context, user)
         await send_about(update)
+
+
+async def handle_onboarding_skip(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    field: str,
+) -> None:
+    user = store.ensure_user(update)
+    state = user.get("state") or ""
+    expected = state.removeprefix("onboarding:")
+    if field != expected:
+        await reply(update, "Эта кнопка уже неактуальна. Продолжаем текущий шаг.")
+        return
+
+    if field == "business_club":
+        user = store.update_user(user["telegram_user_id"], business_club="Другое", state="onboarding:full_name")
+        await reply(
+            update,
+            f"Ок, поставил бизнес-клуб <b>Другое</b>.\n\n"
+            f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
+            reply_markup=skip_keyboard("full_name"),
+        )
+        return
+
+    if field == "full_name":
+        name = default_full_name(user)
+        group = default_forum_group(user)
+        user = store.update_user(
+            user["telegram_user_id"],
+            business_club="Другое",
+            full_name=name,
+            forum_group=group,
+            state="onboarding:community_chat",
+        )
+        await reply(
+            update,
+            f"Ок, заполнил имя как <b>{esc(name)}</b>, форум-группу как "
+            f"<b>{esc(group)}</b>, бизнес-клуб как <b>Другое</b>.\n\n"
+            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Куда отправлять отчёты о здоровье форум-группы?",
+            reply_markup=skip_keyboard("community_chat"),
+        )
+        return
+
+    if field == "forum_group":
+        value = default_forum_group(user)
+        user = store.update_user(user["telegram_user_id"], forum_group=value, state="onboarding:community_chat")
+        await reply(
+            update,
+            f"Ок, заполнил форум-группу как <b>{esc(value)}</b>.\n\n"
+            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Куда отправлять отчёты о здоровье форум-группы?",
+            reply_markup=skip_keyboard("community_chat"),
+        )
+        return
+
+    if field == "community_chat":
+        user = store.update_user(user["telegram_user_id"], community_chat="", state="onboarding:keep_files")
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Сохранять", callback_data="keep:1"),
+                    InlineKeyboardButton("Удалять", callback_data="keep:0"),
+                ],
+                [InlineKeyboardButton("Пропустить", callback_data="skip:keep_files")],
+            ]
+        )
+        await reply(
+            update,
+            "Ок, отчёты о здоровье пока будут оставаться в личном чате.\n\n"
+            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
+            reply_markup=keyboard,
+        )
+        return
+
+    if field == "keep_files":
+        user = store.update_user(user["telegram_user_id"], keep_files=0, state="onboarding:next_forum_date")
+        await reply(
+            update,
+            "Ок, по умолчанию буду удалять файлы после обработки.\n\n"
+            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Когда следующий форум?",
+            reply_markup=skip_keyboard("next_forum_date"),
+        )
+        return
+
+    if field == "next_forum_date":
+        forum_date = default_forum_date()
+        user = store.update_user(
+            user["telegram_user_id"],
+            next_forum_date=forum_date.isoformat(),
+            state=None,
+        )
+        await reply(
+            update,
+            f"Ок, поставил временную дату форума: <b>{forum_date.strftime('%d.%m.%Y')}</b>. "
+            "Её можно поменять в личном кабинете.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        await notify_admin_new_user(context, user)
+        await show_profile_cabinet(update, user)
 
 
 async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> None:
@@ -949,6 +1122,122 @@ async def handle_next_forum_date(
     )
     if is_profile_complete(user):
         await notify_admin_new_user(context, user)
+
+
+def profile_cabinet_text(user: dict[str, Any]) -> str:
+    community = (user.get("community_chat") or "").strip()
+    keep_files = "сохранять" if user.get("keep_files") else "удалять после обработки"
+    diary = "включён" if user.get("diary_enabled") else "выключен"
+    forum_date = user.get("next_forum_date") or "не указана"
+    community_text = community or "не указан — отчёты остаются в личном чате"
+    return (
+        "<b>Личный кабинет</b>\n\n"
+        f"Бизнес-клуб: <b>{esc(user.get('business_club') or 'не указан')}</b>\n"
+        f"ФИ: <b>{esc(user.get('full_name') or 'не указано')}</b>\n"
+        f"Форум-группа: <b>{esc(user.get('forum_group') or 'не указана')}</b>\n"
+        f"Telegram community: <b>{esc(community_text)}</b>\n"
+        f"Файлы: <b>{esc(keep_files)}</b>\n"
+        f"Следующий форум: <b>{esc(forum_date)}</b>\n"
+        f"Режим дневника: <b>{esc(diary)}</b>\n\n"
+        "Все поля можно изменить здесь."
+    )
+
+
+def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Бизнес-клуб", callback_data="profile:edit:business_club"),
+                InlineKeyboardButton("ФИ", callback_data="profile:edit:full_name"),
+            ],
+            [
+                InlineKeyboardButton("Форум-группа", callback_data="profile:edit:forum_group"),
+                InlineKeyboardButton("Community", callback_data="profile:edit:community_chat"),
+            ],
+            [
+                InlineKeyboardButton("Файлы", callback_data="profile:edit:keep_files"),
+                InlineKeyboardButton("Дата форума", callback_data="profile:edit:next_forum_date"),
+            ],
+            [
+                InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
+                InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
+            ],
+        ]
+    )
+
+
+async def show_profile_cabinet(update: Update, user: dict[str, Any]) -> None:
+    fresh = store.get_user(user["telegram_user_id"]) or user
+    await reply(update, profile_cabinet_text(fresh), reply_markup=profile_cabinet_keyboard())
+
+
+async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -> None:
+    if field == "business_club":
+        store.update_user(user["telegram_user_id"], state=None)
+        await reply(update, "Выбери бизнес-клуб.", reply_markup=business_club_keyboard(prefix="profile:club"))
+        return
+    if field == "keep_files":
+        store.update_user(user["telegram_user_id"], state=None)
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Сохранять", callback_data="profile:keep:1"),
+                    InlineKeyboardButton("Удалять", callback_data="profile:keep:0"),
+                ]
+            ]
+        )
+        await reply(update, "Как поступать с файлами после обработки?", reply_markup=keyboard)
+        return
+    if field == "community_chat":
+        store.update_user(user["telegram_user_id"], state="profile:community_chat")
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Очистить", callback_data="profile:clear_community")]])
+        await reply(
+            update,
+            "Пришли <code>@username</code> Telegram community или numeric chat_id. "
+            "Если очистить поле, отчёты останутся в личном чате.",
+            reply_markup=keyboard,
+        )
+        return
+    if field == "next_forum_date":
+        store.update_user(user["telegram_user_id"], state="profile:next_forum_date")
+        await reply(update, "Пришли новую дату форума: например, <code>23.06.2026</code>.")
+        return
+    prompts = {
+        "full_name": "Напиши новые Фамилию Имя.",
+        "forum_group": "Напиши новое название форум-группы.",
+    }
+    if field not in prompts:
+        await reply(update, "Не понял, какое поле изменить.")
+        return
+    store.update_user(user["telegram_user_id"], state=f"profile:{field}")
+    await reply(update, prompts[field])
+
+
+async def handle_profile_edit_text(update: Update, user: dict[str, Any], text: str) -> None:
+    field = str(user.get("state") or "").removeprefix("profile:")
+    value = text.strip()
+    if not value:
+        await reply(update, "Пустое значение не записал. Пришли новое значение.")
+        return
+
+    if field == "full_name":
+        updated = store.update_user(user["telegram_user_id"], full_name=value[:160], state=None)
+    elif field == "forum_group":
+        updated = store.update_user(user["telegram_user_id"], forum_group=value[:160], state=None)
+    elif field == "community_chat":
+        updated = store.update_user(user["telegram_user_id"], community_chat=value[:180], state=None)
+    elif field == "next_forum_date":
+        forum_date = parse_forum_date(value)
+        if forum_date is None:
+            await reply(update, "Не распознал дату. Попробуй так: <code>23.06.2026</code>.")
+            return
+        updated = store.update_user(user["telegram_user_id"], next_forum_date=forum_date.isoformat(), state=None)
+    else:
+        await reply(update, "Не понял, какое поле изменить.")
+        return
+
+    await reply(update, "Сохранил.")
+    await show_profile_cabinet(update, updated)
 
 
 async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
@@ -1578,6 +1867,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("update", cmd_prepare))
     app.add_handler(CommandHandler("nextforum", cmd_next_forum))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("profile", cmd_profile))
+    app.add_handler(CommandHandler("cabinet", cmd_profile))
     app.add_handler(CommandHandler("diary", cmd_diary))
     app.add_handler(CommandHandler("diaryprompt", cmd_diary))
     app.add_handler(CommandHandler("stats", cmd_stats))

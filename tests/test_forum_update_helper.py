@@ -83,3 +83,27 @@ def test_diary_feedback_without_openai(monkeypatch):
     )
 
     assert "OpenAI не настроен" in text
+
+
+def test_profile_defaults_are_generated():
+    user = {"telegram_user_id": 777}
+
+    assert bot.default_full_name(user) == "Участник форума 777"
+    assert bot.default_forum_group(user) == "Форум-группа 777"
+
+
+def test_profile_cabinet_text_marks_empty_community():
+    text = bot.profile_cabinet_text(
+        {
+            "business_club": "Другое",
+            "full_name": "Участник форума 777",
+            "forum_group": "Форум-группа 777",
+            "community_chat": "",
+            "keep_files": 0,
+            "next_forum_date": "2026-06-26",
+            "diary_enabled": 0,
+        }
+    )
+
+    assert "Личный кабинет" in text
+    assert "отчёты остаются в личном чате" in text
