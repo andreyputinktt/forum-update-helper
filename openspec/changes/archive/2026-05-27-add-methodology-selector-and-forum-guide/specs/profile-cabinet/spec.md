@@ -1,8 +1,5 @@
-# profile-cabinet Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-onboarding-skip-and-profile-cabinet. Update Purpose after archive.
-## Requirements
 ### Requirement: Personal cabinet
 The bot SHALL provide a Telegram-native personal cabinet showing the user's
 stored business club, full name, forum group, methodology, community chat, file
@@ -20,13 +17,4 @@ the personal cabinet.
 #### Scenario: User edits a field
 - **WHEN** the user chooses a field and sends a new value or selects a button
 - **THEN** the bot stores the new value and returns to the personal cabinet
-
-### Requirement: Skipped profile fields remain editable
-The bot SHALL mark skipped or defaulted fields in the personal cabinet so users
-can replace them later.
-
-#### Scenario: User skipped community chat
-- **WHEN** the personal cabinet is opened and community chat is empty
-- **THEN** the bot shows that reports will stay in the private chat until the
-  field is configured
 

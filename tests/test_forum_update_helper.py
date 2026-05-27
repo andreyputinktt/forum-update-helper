@@ -33,8 +33,24 @@ def test_build_update_markdown_contains_sections():
     md = bot.build_update_markdown(user, answers)
 
     assert "# Форум-апдейт — High Level" in md
+    assert "- Методика: YPO" in md
     assert "Часть 1. Оценка трёх сфер" in md
     assert "8/10" in md
+
+
+def test_classic_methodology_selects_classic_questions():
+    user = {"methodology": "Классическая"}
+
+    assert bot.methodology_for_user({}) == "YPO"
+    assert bot.update_questions_for_user(user) == bot.CLASSIC_UPDATE_QUESTIONS
+    assert bot.CLASSIC_UPDATE_QUESTIONS[0].prompt.startswith("Бизнес")
+
+
+def test_forum_guide_context_loads_materials():
+    context = bot.load_forum_guide_context("Классическая")
+
+    assert "Классическая методика" in context
+    assert "Форум — это" in context
 
 
 def test_store_delete_user_removes_records(tmp_path):
@@ -98,6 +114,7 @@ def test_profile_cabinet_text_marks_empty_community():
             "business_club": "Другое",
             "full_name": "Участник форума 777",
             "forum_group": "Форум-группа 777",
+            "methodology": "Классическая",
             "community_chat": "",
             "keep_files": 0,
             "next_forum_date": "2026-06-26",
@@ -106,4 +123,6 @@ def test_profile_cabinet_text_marks_empty_community():
     )
 
     assert "Личный кабинет" in text
+    assert "Методика" in text
+    assert "Классическая" in text
     assert "отчёты остаются в личном чате" in text

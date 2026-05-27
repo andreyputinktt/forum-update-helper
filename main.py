@@ -76,12 +76,18 @@ log = logging.getLogger("forum_update_helper")
 _openai = OpenAI() if os.getenv("OPENAI_API_KEY") else None
 
 BUSINESS_CLUBS = ("Атланты", "Эквиум", "К1", "Терра", "Сколково", "Другое")
-ONBOARDING_TOTAL_STEPS = 6
+METHODOLOGIES = ("YPO", "Классическая")
+DEFAULT_METHODOLOGY = "YPO"
+ONBOARDING_TOTAL_STEPS = 7
+FORUM_GUIDE_DIR = BASE_DIR / "docs" / "forum-guide"
+COMMON_GUIDE_PATH = FORUM_GUIDE_DIR / "forum-common-guide.md"
+CLASSIC_GUIDE_PATH = FORUM_GUIDE_DIR / "classic-update.md"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["Подготовить апдейт", "Дата следующего форума"],
-        ["Здоровье форум-группы", "Личный кабинет"],
+        ["Здоровье форум-группы", "Справочник форума"],
+        ["Личный кабинет"],
         ["О боте", "Режим дневника"],
         ["Промпт дневника"],
         ["Ищу психолога", "Ищу коуча"],
@@ -231,6 +237,71 @@ UPDATE_QUESTIONS.extend(
     ]
 )
 
+CLASSIC_UPDATE_QUESTIONS = [
+    Question(
+        "classic_business_rating",
+        "Бизнес: поставь оценку месяца 1-10.",
+        "Классический Update. Оценки месяца",
+    ),
+    Question(
+        "classic_family_rating",
+        "Семья: поставь оценку месяца 1-10.",
+        "Классический Update. Оценки месяца",
+    ),
+    Question(
+        "classic_personal_rating",
+        "Личное: поставь оценку месяца 1-10.",
+        "Классический Update. Оценки месяца",
+    ),
+]
+
+for sphere in ("Бизнес", "Семья", "Личное"):
+    for sign, label in (("plus", "плюс"), ("minus", "минус")):
+        CLASSIC_UPDATE_QUESTIONS.extend(
+            [
+                Question(
+                    f"classic_{sphere}_{sign}_event",
+                    f"{sphere}, {label}: самое важное, что произошло. Одним предложением.",
+                    f"Классический Update. {sphere}",
+                ),
+                Question(
+                    f"classic_{sphere}_{sign}_importance",
+                    f"{sphere}, {label}: почему эта ситуация важна для тебя?",
+                    f"Классический Update. {sphere}",
+                ),
+                Question(
+                    f"classic_{sphere}_{sign}_feelings",
+                    f"{sphere}, {label}: какие чувства ты испытываешь? Укажи минимум три чувства.",
+                    f"Классический Update. {sphere}",
+                ),
+            ]
+        )
+
+CLASSIC_UPDATE_QUESTIONS.extend(
+    [
+        Question(
+            "classic_presentation_topic",
+            "Если бы ты презентовал сегодня, какую текущую ситуацию или возможность в бизнесе, семье или личной жизни хотел бы обсудить с форумом?",
+            "Классический Update. Тема для форума",
+        ),
+        Question(
+            "classic_5_percent_joy",
+            "Какие 5% самых радостных событий и чувств месяца стоит назвать?",
+            "Классический Update. 5%",
+        ),
+        Question(
+            "classic_5_percent_heavy",
+            "Какие 5% самых тяжёлых событий и чувств месяца требуют внимания форума?",
+            "Классический Update. 5%",
+        ),
+        Question(
+            "classic_main_question",
+            "Над чем ты хотел бы поработать? Сформулируй один вопрос или запрос к форуму.",
+            "Классический Update. Главный запрос",
+        ),
+    ]
+)
+
 for sphere in SPHERES:
     UPDATE_QUESTIONS.append(
         Question(
@@ -336,6 +407,30 @@ def is_profile_complete(user: dict[str, Any]) -> bool:
     ) and user.get("keep_files") is not None
 
 
+def methodology_for_user(user: dict[str, Any]) -> str:
+    methodology = (user.get("methodology") or DEFAULT_METHODOLOGY).strip()
+    return methodology if methodology in METHODOLOGIES else DEFAULT_METHODOLOGY
+
+
+def update_questions_for_user(user: dict[str, Any]) -> list[Question]:
+    if methodology_for_user(user) == "Классическая":
+        return CLASSIC_UPDATE_QUESTIONS
+    return UPDATE_QUESTIONS
+
+
+def load_forum_guide_context(methodology: str | None = None, max_chars: int = 18000) -> str:
+    parts: list[str] = []
+    for path in (COMMON_GUIDE_PATH, CLASSIC_GUIDE_PATH):
+        if path == CLASSIC_GUIDE_PATH and methodology and methodology != "Классическая":
+            continue
+        if path.exists():
+            parts.append(path.read_text(encoding="utf-8").strip())
+    context = "\n\n---\n\n".join(part for part in parts if part)
+    if len(context) <= max_chars:
+        return context
+    return context[:max_chars].rstrip() + "\n\n[контекст обрезан]"
+
+
 class Store:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -357,6 +452,7 @@ class Store:
                 business_club TEXT,
                 full_name TEXT,
                 forum_group TEXT,
+                methodology TEXT DEFAULT 'YPO',
                 community_chat TEXT,
                 keep_files INTEGER,
                 state TEXT,
@@ -386,6 +482,7 @@ class Store:
             );
             """
         )
+        self._ensure_column("users", "methodology", "TEXT DEFAULT 'YPO'")
         self._ensure_column("users", "diary_enabled", "INTEGER DEFAULT 0")
         self._ensure_column("users", "diary_feedback_prompt", "TEXT")
         self.conn.commit()
@@ -529,8 +626,9 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("Health check", callback_data="menu:health"),
-                InlineKeyboardButton("Личный кабинет", callback_data="profile:show"),
+                InlineKeyboardButton("Справочник", callback_data="guide:open"),
             ],
+            [InlineKeyboardButton("Личный кабинет", callback_data="profile:show")],
             [
                 InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
                 InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
@@ -560,6 +658,22 @@ def business_club_keyboard(prefix: str = "club") -> InlineKeyboardMarkup:
     if prefix == "club":
         buttons.append([InlineKeyboardButton("Пропустить", callback_data="skip:business_club")])
     return InlineKeyboardMarkup(buttons)
+
+
+def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(value, callback_data=f"{prefix}:{value}")] for value in METHODOLOGIES]
+    if prefix == "methodology":
+        buttons.append([InlineKeyboardButton("Пропустить", callback_data="skip:methodology")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def guide_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Задать вопрос по справочнику", callback_data="guide:ask")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]
+    )
 
 
 def flow_keyboard(show_next: bool = False) -> InlineKeyboardMarkup:
@@ -664,13 +778,14 @@ async def send_about(update: Update) -> None:
     await reply(
         update,
         "<b>О боте</b>\n\n"
-        "Я готовлю форумный апдейт в формате X-Competence: три сферы жизни, "
-        "ретроспектива, следующий период, один глубокий запрос и личный план действий.\n\n"
+        "Я готовлю форумный апдейт в форматах YPO/X-Competence и «Классическая»: "
+        "провожу по вопросам, собираю файл и помогаю свериться со справочником форума.\n\n"
         "Что умею:\n"
         "• спрашивать дату следующего форума при старте;\n"
         "• за 3 дня до форума начинать подготовку с первого вопроса апдейта;\n"
         "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
         "• проводить весь апдейт вопрос за вопросом с кнопкой «Далее» и счётчиком;\n"
+        "• отвечать на вопросы по сохранённым материалам форума;\n"
         "• принимать голосовые ответы и показывать транскрипт;\n"
         "• работать в режиме дневника и давать обратную связь по твоему prompt;\n"
         "• на следующее утро после форума спрашивать здоровье группы;\n"
@@ -718,6 +833,12 @@ async def cmd_health(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
     await start_health_flow(update, user)
 
 
+async def cmd_guide(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "guide")
+    await show_forum_guide(update, user)
+
+
 async def cmd_profile(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "profile")
@@ -756,6 +877,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("club:"):
         await handle_onboarding_text(update, context, data.split(":", 1)[1])
+    elif data.startswith("methodology:"):
+        if user.get("state") != "onboarding:methodology":
+            await reply(update, "Эта кнопка уже неактуальна. Методика меняется в личном кабинете.")
+            return
+        await handle_onboarding_text(update, context, data.split(":", 1)[1])
     elif data.startswith("keep:"):
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
@@ -766,6 +892,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await ask_next_forum_date(update, user)
     elif data == "menu:health":
         await start_health_flow(update, user)
+    elif data == "guide:open":
+        await show_forum_guide(update, user)
+    elif data == "guide:ask":
+        await start_guide_question(update, user)
     elif data == "profile:show":
         await show_profile_cabinet(update, user)
     elif data.startswith("profile:edit:"):
@@ -773,6 +903,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data.startswith("profile:club:"):
         updated = store.update_user(user["telegram_user_id"], business_club=data.split(":", 2)[2], state=None)
         await reply(update, "Бизнес-клуб обновлён.")
+        await show_profile_cabinet(update, updated)
+    elif data.startswith("profile:methodology:"):
+        updated = store.update_user(user["telegram_user_id"], methodology=data.split(":", 2)[2], state=None)
+        await reply(update, "Методика обновлена.")
         await show_profile_cabinet(update, updated)
     elif data.startswith("profile:keep:"):
         updated = store.update_user(
@@ -835,6 +969,7 @@ async def route_text(
         "подготовить апдейт": lambda: start_update_flow(update, user),
         "дата следующего форума": lambda: ask_next_forum_date(update, user),
         "здоровье форум-группы": lambda: start_health_flow(update, user),
+        "справочник форума": lambda: show_forum_guide(update, user),
         "личный кабинет": lambda: show_profile_cabinet(update, user),
         "о боте": lambda: send_about(update),
         "режим дневника": lambda: show_diary_mode_menu(update, user),
@@ -865,6 +1000,10 @@ async def route_text(
         await save_diary_prompt(update, user, text)
         return
 
+    if user.get("state") == "guide:question":
+        await answer_guide_question(update, context, user, text)
+        return
+
     if str(user.get("state") or "").startswith("profile:"):
         await handle_profile_edit_text(update, user, text)
         return
@@ -874,7 +1013,7 @@ async def route_text(
         return
 
     if user.get("active_flow") == "update":
-        await handle_question_answer(update, context, user, text, UPDATE_QUESTIONS)
+        await handle_question_answer(update, context, user, text, update_questions_for_user(user))
         return
 
     if user.get("active_flow") == "health":
@@ -922,10 +1061,23 @@ async def handle_onboarding_text(
         return
 
     if state == "onboarding:forum_group":
-        store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:community_chat")
+        store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:methodology")
         await reply(
             update,
             f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Выбери методику подготовки апдейта.",
+            reply_markup=methodology_keyboard(),
+        )
+        return
+
+    if state == "onboarding:methodology":
+        methodology = text.strip()
+        if methodology not in METHODOLOGIES:
+            methodology = DEFAULT_METHODOLOGY
+        store.update_user(user["telegram_user_id"], methodology=methodology, state="onboarding:community_chat")
+        await reply(
+            update,
+            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Куда отправлять отчёты о здоровье форум-группы?\n\n"
             "Пришли <code>@username</code> чата/канала или numeric chat_id. "
             "Бот должен быть добавлен туда и иметь право писать.",
@@ -946,7 +1098,7 @@ async def handle_onboarding_text(
         )
         await reply(
             update,
-            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
             reply_markup=keyboard,
         )
@@ -961,7 +1113,7 @@ async def handle_onboarding_text(
         )
         await reply(
             update,
-            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Когда следующий форум? Напиши дату: например, <code>23.06.2026</code> "
             "или <code>2026-06-23</code>.",
             reply_markup=skip_keyboard("next_forum_date"),
@@ -1017,25 +1169,40 @@ async def handle_onboarding_skip(
             business_club="Другое",
             full_name=name,
             forum_group=group,
-            state="onboarding:community_chat",
+            state="onboarding:methodology",
         )
         await reply(
             update,
             f"Ок, заполнил имя как <b>{esc(name)}</b>, форум-группу как "
             f"<b>{esc(group)}</b>, бизнес-клуб как <b>Другое</b>.\n\n"
             f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Куда отправлять отчёты о здоровье форум-группы?",
-            reply_markup=skip_keyboard("community_chat"),
+            "Выбери методику подготовки апдейта.",
+            reply_markup=methodology_keyboard(),
         )
         return
 
     if field == "forum_group":
         value = default_forum_group(user)
-        user = store.update_user(user["telegram_user_id"], forum_group=value, state="onboarding:community_chat")
+        user = store.update_user(user["telegram_user_id"], forum_group=value, state="onboarding:methodology")
         await reply(
             update,
             f"Ок, заполнил форум-группу как <b>{esc(value)}</b>.\n\n"
             f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Выбери методику подготовки апдейта.",
+            reply_markup=methodology_keyboard(),
+        )
+        return
+
+    if field == "methodology":
+        user = store.update_user(
+            user["telegram_user_id"],
+            methodology=DEFAULT_METHODOLOGY,
+            state="onboarding:community_chat",
+        )
+        await reply(
+            update,
+            f"Ок, поставил методику <b>{DEFAULT_METHODOLOGY}</b>.\n\n"
+            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Куда отправлять отчёты о здоровье форум-группы?",
             reply_markup=skip_keyboard("community_chat"),
         )
@@ -1055,7 +1222,7 @@ async def handle_onboarding_skip(
         await reply(
             update,
             "Ок, отчёты о здоровье пока будут оставаться в личном чате.\n\n"
-            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные аудио на сервере или удалять после обработки?",
             reply_markup=keyboard,
         )
@@ -1066,7 +1233,7 @@ async def handle_onboarding_skip(
         await reply(
             update,
             "Ок, по умолчанию буду удалять файлы после обработки.\n\n"
-            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Когда следующий форум?",
             reply_markup=skip_keyboard("next_forum_date"),
         )
@@ -1126,6 +1293,7 @@ async def handle_next_forum_date(
 
 def profile_cabinet_text(user: dict[str, Any]) -> str:
     community = (user.get("community_chat") or "").strip()
+    methodology = methodology_for_user(user)
     keep_files = "сохранять" if user.get("keep_files") else "удалять после обработки"
     diary = "включён" if user.get("diary_enabled") else "выключен"
     forum_date = user.get("next_forum_date") or "не указана"
@@ -1135,6 +1303,7 @@ def profile_cabinet_text(user: dict[str, Any]) -> str:
         f"Бизнес-клуб: <b>{esc(user.get('business_club') or 'не указан')}</b>\n"
         f"ФИ: <b>{esc(user.get('full_name') or 'не указано')}</b>\n"
         f"Форум-группа: <b>{esc(user.get('forum_group') or 'не указана')}</b>\n"
+        f"Методика: <b>{esc(methodology)}</b>\n"
         f"Telegram community: <b>{esc(community_text)}</b>\n"
         f"Файлы: <b>{esc(keep_files)}</b>\n"
         f"Следующий форум: <b>{esc(forum_date)}</b>\n"
@@ -1152,8 +1321,9 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("Форум-группа", callback_data="profile:edit:forum_group"),
-                InlineKeyboardButton("Community", callback_data="profile:edit:community_chat"),
+                InlineKeyboardButton("Методика", callback_data="profile:edit:methodology"),
             ],
+            [InlineKeyboardButton("Community", callback_data="profile:edit:community_chat")],
             [
                 InlineKeyboardButton("Файлы", callback_data="profile:edit:keep_files"),
                 InlineKeyboardButton("Дата форума", callback_data="profile:edit:next_forum_date"),
@@ -1175,6 +1345,10 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
     if field == "business_club":
         store.update_user(user["telegram_user_id"], state=None)
         await reply(update, "Выбери бизнес-клуб.", reply_markup=business_club_keyboard(prefix="profile:club"))
+        return
+    if field == "methodology":
+        store.update_user(user["telegram_user_id"], state=None)
+        await reply(update, "Выбери методику подготовки апдейта.", reply_markup=methodology_keyboard(prefix="profile:methodology"))
         return
     if field == "keep_files":
         store.update_user(user["telegram_user_id"], state=None)
@@ -1238,6 +1412,87 @@ async def handle_profile_edit_text(update: Update, user: dict[str, Any], text: s
 
     await reply(update, "Сохранил.")
     await show_profile_cabinet(update, updated)
+
+
+async def show_forum_guide(update: Update, user: dict[str, Any]) -> None:
+    methodology = methodology_for_user(user)
+    store.update_user(user["telegram_user_id"], state=None)
+    await reply(
+        update,
+        "<b>Справочник форума</b>\n\n"
+        "Я сохранил материалы из фото: общие принципы форума, формулу общения, "
+        "правило 5%, окно Джохари, список чувств и классический Update.\n\n"
+        f"Твоя текущая методика апдейта: <b>{esc(methodology)}</b>.\n"
+        "Можно спросить, например: «Можно ли это выносить на форум?» или "
+        "«Оцени мой апдейт по методике».",
+        reply_markup=guide_keyboard(),
+    )
+
+
+async def start_guide_question(update: Update, user: dict[str, Any]) -> None:
+    store.update_user(user["telegram_user_id"], state="guide:question", active_flow=None)
+    await reply(
+        update,
+        "<b>Вопрос по справочнику</b>\n\n"
+        "Напиши вопрос или пришли апдейт, который надо оценить по материалам форума.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def answer_guide_question(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    text: str,
+) -> None:
+    store.update_user(user["telegram_user_id"], state=None)
+    await reply(update, "Сверяю со справочником форума.")
+    answer = await generate_guide_answer(user, text)
+    await reply(update, answer, reply_markup=MAIN_KEYBOARD)
+
+
+async def generate_guide_answer(user: dict[str, Any], question: str) -> str:
+    methodology = methodology_for_user(user)
+    guide_context = load_forum_guide_context(methodology)
+    if _openai is None:
+        return (
+            "OpenAI не настроен на сервере, поэтому сейчас могу только подсказать, "
+            "что справочник уже сохранён в материалах бота. Ключевые опоры: говорить "
+            "только из личного опыта, не давать советов, выносить в форум 5% самых "
+            "важных радостных и тяжёлых тем, держать конфиденциальность."
+        )
+
+    system = (
+        "Ты Telegram-ассистент форум-группы. Отвечай на русском, коротко и практично. "
+        "Опирайся только на переданный справочник. Не выдумывай правил, если их нет в контексте. "
+        "Если пользователь просит оценить апдейт, оцени глубину, соответствие методике, "
+        "личный опыт, чувства, отсутствие советов и качество главного вопроса."
+    )
+    prompt = (
+        f"Методика пользователя: {methodology}\n\n"
+        f"Справочник:\n{guide_context}\n\n"
+        f"Вопрос пользователя:\n{question[:12000]}\n\n"
+        "Ответь в формате:\n"
+        "1. Короткий вывод\n"
+        "2. Что из справочника важно применить\n"
+        "3. Один следующий шаг"
+    )
+
+    def _call() -> str:
+        response = _openai.responses.create(
+            model=OPENAI_MODEL,
+            instructions=system,
+            input=prompt,
+            max_output_tokens=900,
+            text={"verbosity": "low"},
+        )
+        return extract_response_text(response)
+
+    try:
+        return await asyncio.to_thread(_call)
+    except Exception as exc:
+        log.warning("guide answer failed user_id=%s error=%s", user.get("telegram_user_id"), exc)
+        return "Не смог ответить по справочнику сейчас. Попробуй ещё раз позже."
 
 
 async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
@@ -1362,15 +1617,17 @@ async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
     if not is_profile_complete(user):
         await start_onboarding(update, None, user)  # type: ignore[arg-type]
         return
+    methodology = methodology_for_user(user)
+    questions = update_questions_for_user(user)
     user = store.set_flow(user["telegram_user_id"], "update", 0, {"answers": {}})
     await reply(
         update,
-        "<b>Начинаем апдейт X-Competence</b>\n\n"
+        f"<b>Начинаем апдейт: {esc(methodology)}</b>\n\n"
         "Будем идти по всем вопросам. Отвечай коротко или голосом. "
         "В конце я соберу Markdown-файл апдейта.",
         reply_markup=cancel_keyboard(),
     )
-    await ask_current_question(update, user, UPDATE_QUESTIONS)
+    await ask_current_question(update, user, questions)
 
 
 async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
@@ -1421,7 +1678,7 @@ async def handle_flow_next(
 ) -> None:
     flow = user.get("active_flow")
     if flow == "update":
-        questions = UPDATE_QUESTIONS
+        questions = update_questions_for_user(user)
     elif flow == "health":
         questions = HEALTH_QUESTIONS
     else:
@@ -1493,18 +1750,26 @@ def answers_by_section(answers: dict[str, str], questions: list[Question]) -> di
     return grouped
 
 
-def build_update_markdown(user: dict[str, Any], answers: dict[str, str], reflection: str = "") -> str:
+def build_update_markdown(
+    user: dict[str, Any],
+    answers: dict[str, str],
+    reflection: str = "",
+    questions: list[Question] | None = None,
+) -> str:
     forum_date = user.get("next_forum_date") or "не указана"
+    methodology = methodology_for_user(user)
+    selected_questions = questions or update_questions_for_user(user)
     lines = [
         f"# Форум-апдейт — {user.get('forum_group') or 'форум-группа'}",
         "",
         f"- Участник: {user.get('full_name') or ''}",
         f"- Бизнес-клуб: {user.get('business_club') or ''}",
+        f"- Методика: {methodology}",
         f"- Дата форума: {forum_date}",
         f"- Создано: {datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
         "",
     ]
-    for section, items in answers_by_section(answers, UPDATE_QUESTIONS).items():
+    for section, items in answers_by_section(answers, selected_questions).items():
         lines.extend([f"## {section}", ""])
         for prompt, answer in items:
             lines.extend([f"**{prompt}**", "", answer.strip() or "_Нет ответа_", ""])
@@ -1513,18 +1778,27 @@ def build_update_markdown(user: dict[str, Any], answers: dict[str, str], reflect
     return "\n".join(lines).strip() + "\n"
 
 
-async def maybe_reflect_update(answers: dict[str, str]) -> str:
+async def maybe_reflect_update(
+    user: dict[str, Any],
+    answers: dict[str, str],
+    questions: list[Question],
+) -> str:
     if not (_openai and OPENAI_REFLECTION_ENABLED):
         return ""
 
     compact_answers = "\n".join(
-        f"- {q.prompt}: {answers.get(q.key, '')}" for q in UPDATE_QUESTIONS if answers.get(q.key)
+        f"- {q.prompt}: {answers.get(q.key, '')}" for q in questions if answers.get(q.key)
     )
+    methodology = methodology_for_user(user)
+    guide_context = load_forum_guide_context(methodology, max_chars=10000)
     prompt = (
         "Ты MCC-level коуч и бизнес-ментор. Дай короткую сводку форумного "
-        "апдейта на русском: 3 главных наблюдения, 3 уточняющих вопроса, 3 "
-        "риска самообмана. Без советов группе, только подготовка автора.\n\n"
-        + compact_answers[:16000]
+        "апдейта на русском. Оцени подготовку через выбранную методику и "
+        "принципы форума: личный опыт, чувства, глубина 5%, отсутствие советов, "
+        "ясность главного вопроса. Без советов группе, только подготовка автора.\n\n"
+        f"Методика: {methodology}\n\n"
+        f"Справочник:\n{guide_context}\n\n"
+        f"Апдейт:\n{compact_answers[:16000]}"
     )
 
     def _call() -> str:
@@ -1564,8 +1838,9 @@ async def finish_update_flow(
     answers: dict[str, str],
 ) -> None:
     await reply(update, "Собираю апдейт в Markdown. Если включена AI-сводка, добавлю короткую менторскую выжимку.")
-    reflection = await maybe_reflect_update(answers)
-    content = build_update_markdown(user, answers, reflection)
+    questions = update_questions_for_user(user)
+    reflection = await maybe_reflect_update(user, answers, questions)
+    content = build_update_markdown(user, answers, reflection, questions)
     user_dir = UPDATES_DIR / str(user["telegram_user_id"])
     user_dir.mkdir(parents=True, exist_ok=True)
     filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
@@ -1576,7 +1851,7 @@ async def finish_update_flow(
             await update.effective_message.reply_document(
                 document=fh,
                 filename=filename,
-                caption="Готово: форумный апдейт X-Competence.",
+                caption=f"Готово: форумный апдейт {methodology_for_user(user)}.",
                 reply_markup=MAIN_KEYBOARD,
             )
     if not user.get("keep_files"):
@@ -1773,18 +2048,20 @@ async def maybe_send_forum_reminders(
         if not store.reminder_sent(user["telegram_user_id"], reminder_type, value):
             fresh = store.get_user(user["telegram_user_id"]) or user
             if not fresh.get("active_flow"):
+                questions = update_questions_for_user(fresh)
+                methodology = methodology_for_user(fresh)
                 store.set_flow(user["telegram_user_id"], "update", 0, {"answers": {}})
                 await safe_send(
                     context,
                     chat_id,
                     "<b>Пора готовить форумный апдейт</b>\n\n"
-                    f"До форума {days_left} дн. Начинаю подготовку по X-Competence. "
+                    f"До форума {days_left} дн. Начинаю подготовку по методике {esc(methodology)}. "
                     "Отвечай текстом или голосом.",
                 )
                 await safe_send(
                     context,
                     chat_id,
-                    question_message(UPDATE_QUESTIONS[0], 0, len(UPDATE_QUESTIONS)),
+                    question_message(questions[0], 0, len(questions)),
                     reply_markup=flow_keyboard(False),
                 )
             else:
@@ -1867,6 +2144,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("update", cmd_prepare))
     app.add_handler(CommandHandler("nextforum", cmd_next_forum))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("guide", cmd_guide))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("cabinet", cmd_profile))
     app.add_handler(CommandHandler("diary", cmd_diary))
