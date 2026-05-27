@@ -59,3 +59,27 @@ def test_store_delete_user_removes_records(tmp_path):
 
     assert store.get_user(123) is None
     assert store.conn.execute("SELECT COUNT(*) AS n FROM interactions").fetchone()["n"] == 0
+
+
+def test_store_adds_diary_columns(tmp_path):
+    store = bot.Store(tmp_path / "state.sqlite3")
+    columns = {
+        row["name"]
+        for row in store.conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+
+    assert "diary_enabled" in columns
+    assert "diary_feedback_prompt" in columns
+
+
+def test_diary_feedback_without_openai(monkeypatch):
+    monkeypatch.setattr(bot, "_openai", None)
+    text = bot.asyncio.run(
+        bot.generate_diary_feedback(
+            {"full_name": "Иван Иванов", "forum_group": "High Level"},
+            "Сегодня много думал про лидерство.",
+            "С точки зрения лидерства.",
+        )
+    )
+
+    assert "OpenAI не настроен" in text

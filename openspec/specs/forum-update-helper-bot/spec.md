@@ -19,8 +19,9 @@ preparation workflow.
 
 ### Requirement: Telegram-native menu
 The bot SHALL provide persistent and inline Telegram buttons for core actions:
-prepare update, set next forum date, run health check, about bot, find
-psychologist, find coach, contact author, show stats, and delete my data.
+prepare update, set next forum date, run health check, diary mode, diary prompt
+editing, bot info, build your own bot, find psychologist, find coach, contact
+author, show stats, and delete my data.
 
 #### Scenario: User opens menu
 - **WHEN** an onboarded user sends `/menu`

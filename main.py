@@ -81,8 +81,10 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["Подготовить апдейт", "Дата следующего форума"],
         ["Здоровье форум-группы", "О боте"],
+        ["Режим дневника", "Промпт дневника"],
         ["Ищу психолога", "Ищу коуча"],
-        ["Связаться с автором", "Удалить мои данные"],
+        ["Сделать собственный бот", "Связаться с автором"],
+        ["Удалить мои данные"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -90,6 +92,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 PSYCHOLOGIST_URL = "https://all.achernigova.ru/p/recommendediarpt/"
 COACH_URL = "https://5prism.ru/kouchi/"
+REPO_URL = "https://github.com/andreyputinktt/forum-update-helper"
+BUILD_BOT_DOC_URL = "https://github.com/andreyputinktt/forum-update-helper/blob/main/CREATE_OWN_BOT.md"
 AUTHOR_TEXT = (
     "Автор бота: Андрей Путин.\n"
     "Telegram: @utandr\n\n"
@@ -346,6 +350,8 @@ class Store:
                 active_step INTEGER DEFAULT 0,
                 flow_payload TEXT DEFAULT '{}',
                 next_forum_date TEXT,
+                diary_enabled INTEGER DEFAULT 0,
+                diary_feedback_prompt TEXT,
                 last_offsite_reminder_date TEXT,
                 admin_notified INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -366,7 +372,14 @@ class Store:
             );
             """
         )
+        self._ensure_column("users", "diary_enabled", "INTEGER DEFAULT 0")
+        self._ensure_column("users", "diary_feedback_prompt", "TEXT")
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if column not in {row["name"] for row in rows}:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def ensure_user(self, update: Update) -> dict[str, Any]:
         tg_user = update.effective_user
@@ -505,9 +518,14 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("О боте", callback_data="menu:about"),
             ],
             [
+                InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
+                InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
+            ],
+            [
                 InlineKeyboardButton("Ищу психолога", url=PSYCHOLOGIST_URL),
                 InlineKeyboardButton("Ищу коуча", url=COACH_URL),
             ],
+            [InlineKeyboardButton("Сделать собственный бот", url=BUILD_BOT_DOC_URL)],
             [InlineKeyboardButton("Связаться с автором", callback_data="menu:author")],
             [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
         ]
@@ -627,9 +645,12 @@ async def send_about(update: Update) -> None:
         "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
         "• проводить весь апдейт вопрос за вопросом с кнопкой «Далее» и счётчиком;\n"
         "• принимать голосовые ответы и показывать транскрипт;\n"
+        "• работать в режиме дневника и давать обратную связь по твоему prompt;\n"
         "• на следующее утро после форума спрашивать здоровье группы;\n"
         "• раз в три месяца напоминать о личной стратегической сессии в отеле;\n"
-        "• удалить твои данные с сервера по кнопке.",
+        "• удалить твои данные с сервера по кнопке.\n\n"
+        f'<a href="{REPO_URL}">Репозиторий</a> · '
+        f'<a href="{BUILD_BOT_DOC_URL}">Сделать собственный бот</a>',
         reply_markup=main_inline_keyboard(),
     )
 
@@ -670,6 +691,12 @@ async def cmd_health(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
     await start_health_flow(update, user)
 
 
+async def cmd_diary(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = store.ensure_user(update)
+    store.log_interaction(user["telegram_user_id"], "diary")
+    await start_diary_prompt_setup(update, user, enable=True)
+
+
 async def cmd_stats(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     if ADMIN_CHAT_ID and update.effective_chat.id != ADMIN_CHAT_ID:
@@ -708,6 +735,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await send_about(update)
     elif data == "menu:author":
         await reply(update, esc(AUTHOR_TEXT))
+    elif data == "diary:mode":
+        await show_diary_mode_menu(update, user)
+    elif data == "diary:prompt":
+        await start_diary_prompt_setup(update, user, enable=True)
+    elif data == "diary:enable":
+        await start_diary_prompt_setup(update, user, enable=True)
+    elif data == "diary:disable":
+        store.update_user(user["telegram_user_id"], diary_enabled=0, state=None)
+        await reply(update, "Режим дневника выключен.", reply_markup=MAIN_KEYBOARD)
     elif data == "delete:ask":
         await ask_delete_data(update)
     elif data == "delete:confirm":
@@ -745,6 +781,13 @@ async def route_text(
         "дата следующего форума": lambda: ask_next_forum_date(update, user),
         "здоровье форум-группы": lambda: start_health_flow(update, user),
         "о боте": lambda: send_about(update),
+        "режим дневника": lambda: show_diary_mode_menu(update, user),
+        "промпт дневника": lambda: start_diary_prompt_setup(update, user, enable=True),
+        "сделать собственный бот": lambda: reply(
+            update,
+            f'<a href="{BUILD_BOT_DOC_URL}">Инструкция: сделать собственный бот</a>\n'
+            f'<a href="{REPO_URL}">Репозиторий</a>',
+        ),
         "ищу психолога": lambda: reply(update, f'<a href="{PSYCHOLOGIST_URL}">Рекомендованные психологи</a>'),
         "ищу коуча": lambda: reply(update, f'<a href="{COACH_URL}">Коучи 5 Prism</a>'),
         "связаться с автором": lambda: reply(update, esc(AUTHOR_TEXT)),
@@ -762,6 +805,10 @@ async def route_text(
         await handle_next_forum_date(update, context, user, text)
         return
 
+    if user.get("state") == "diary:prompt":
+        await save_diary_prompt(update, user, text)
+        return
+
     if user.get("state") == "flow:await_next" and user.get("active_flow"):
         await reply(update, "Ответ записан. Нажми «Далее», чтобы перейти к следующему вопросу.", reply_markup=flow_keyboard(True))
         return
@@ -772,6 +819,10 @@ async def route_text(
 
     if user.get("active_flow") == "health":
         await handle_question_answer(update, context, user, text, HEALTH_QUESTIONS)
+        return
+
+    if user.get("diary_enabled"):
+        await handle_diary_entry(update, context, user, text)
         return
 
     await reply(
@@ -898,6 +949,124 @@ async def handle_next_forum_date(
     )
     if is_profile_complete(user):
         await notify_admin_new_user(context, user)
+
+
+async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
+    enabled = bool(user.get("diary_enabled"))
+    prompt = (user.get("diary_feedback_prompt") or "").strip()
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Выключить" if enabled else "Включить",
+                    callback_data="diary:disable" if enabled else "diary:enable",
+                )
+            ],
+            [InlineKeyboardButton("Поменять prompt обратной связи", callback_data="diary:prompt")],
+        ]
+    )
+    status = "включён" if enabled else "выключен"
+    prompt_text = prompt or "пока не задан"
+    await reply(
+        update,
+        f"<b>Режим дневника: {status}</b>\n\n"
+        "Когда режим включён, свободные сообщения вне апдейта и health check "
+        "я воспринимаю как дневниковые записи и даю обратную связь по твоему prompt.\n\n"
+        f"<b>Текущий prompt</b>\n{esc(prompt_text)}",
+        reply_markup=keyboard,
+    )
+
+
+async def start_diary_prompt_setup(update: Update, user: dict[str, Any], enable: bool) -> None:
+    store.update_user(user["telegram_user_id"], state="diary:prompt")
+    verb = "включить" if enable else "изменить"
+    await reply(
+        update,
+        f"<b>Режим дневника</b>\n\n"
+        f"Напиши, как именно мне давать обратную связь на дневник. "
+        f"Например:\n\n"
+        f"<i>С точки зрения лидерства, Алмазного огранщика и моих паттернов.</i>\n\n"
+        f"После этого я {verb} режим дневника.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def save_diary_prompt(update: Update, user: dict[str, Any], text: str) -> None:
+    prompt = text.strip()[:2000]
+    if not prompt:
+        await reply(update, "Prompt пустой. Напиши, какую обратную связь давать на дневник.")
+        return
+    store.update_user(
+        user["telegram_user_id"],
+        diary_enabled=1,
+        diary_feedback_prompt=prompt,
+        state=None,
+    )
+    await reply(
+        update,
+        "<b>Режим дневника включён</b>\n\n"
+        "Теперь свободные сообщения буду читать как дневник и давать обратную связь так:\n"
+        f"{esc(prompt)}",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+async def handle_diary_entry(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    text: str,
+) -> None:
+    prompt = (user.get("diary_feedback_prompt") or "").strip()
+    if not prompt:
+        await start_diary_prompt_setup(update, user, enable=True)
+        return
+    store.log_interaction(user["telegram_user_id"], "diary_entry")
+    await reply(update, "Принял как дневниковую запись. Дам обратную связь.")
+    feedback = await generate_diary_feedback(user, text, prompt)
+    await reply(update, feedback or "Не смог собрать обратную связь сейчас. Запись принял.", reply_markup=MAIN_KEYBOARD)
+
+
+async def generate_diary_feedback(user: dict[str, Any], entry: str, feedback_prompt: str) -> str:
+    if _openai is None:
+        return (
+            "OpenAI не настроен на сервере, поэтому AI-обратная связь недоступна. "
+            "Режим дневника включён; запись можно отправить позже после настройки ключа."
+        )
+
+    system = (
+        "Ты Telegram-ассистент дневниковой рефлексии для предпринимателей. "
+        "Давай короткую, практичную обратную связь на русском. "
+        "Не ставь диагнозов, не давай медицинских или юридических советов. "
+        "Работай как зеркало: наблюдения, вопросы, паттерны, следующий маленький шаг."
+    )
+    prompt = (
+        f"Пользователь: {user.get('full_name') or 'не указан'}\n"
+        f"Форум-группа: {user.get('forum_group') or 'не указана'}\n\n"
+        f"Как давать обратную связь:\n{feedback_prompt}\n\n"
+        f"Дневниковая запись:\n{entry[:12000]}\n\n"
+        "Формат ответа:\n"
+        "1. Что я слышу\n"
+        "2. Возможный паттерн\n"
+        "3. Вопрос к себе\n"
+        "4. Один следующий шаг"
+    )
+
+    def _call() -> str:
+        response = _openai.responses.create(
+            model=OPENAI_MODEL,
+            instructions=system,
+            input=prompt,
+            max_output_tokens=900,
+            text={"verbosity": "low"},
+        )
+        return extract_response_text(response)
+
+    try:
+        return await asyncio.to_thread(_call)
+    except Exception as exc:
+        log.warning("diary feedback failed user_id=%s error=%s", user.get("telegram_user_id"), exc)
+        return ""
 
 
 async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
@@ -1409,6 +1578,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("update", cmd_prepare))
     app.add_handler(CommandHandler("nextforum", cmd_next_forum))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("diary", cmd_diary))
+    app.add_handler(CommandHandler("diaryprompt", cmd_diary))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("getid", cmd_getid))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
