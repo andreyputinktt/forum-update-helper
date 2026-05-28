@@ -338,6 +338,15 @@ def test_forum_guide_context_loads_materials():
 
     assert "Классическая методика" in context
     assert "Форум — это" in context
+    assert "Источник:" not in context
+
+
+def test_forum_guide_context_loads_x_competence_materials():
+    context = bot.load_forum_guide_context("С личной стратегией (X-Competence)")
+
+    assert "Методика с личной стратегией" in context
+    assert "Классическая методика" not in context
+    assert "Источник:" not in context
 
 
 def test_ai_forum_standard_markdown_contains_agent_instruction():
@@ -347,6 +356,7 @@ def test_ai_forum_standard_markdown_contains_agent_instruction():
     assert "## Инструкция для ИИ-агента" in text
     assert "Классическая методика (YPO)" in text
     assert "С личной стратегией (X-Competence)" in text
+    assert "Методика с личной стратегией" in text
     assert "заполнено N/TOTAL" in text
 
 

@@ -100,6 +100,7 @@ DIARY_REMINDER_CHOICES = {
 FORUM_GUIDE_DIR = BASE_DIR / "docs" / "forum-guide"
 COMMON_GUIDE_PATH = FORUM_GUIDE_DIR / "forum-common-guide.md"
 CLASSIC_GUIDE_PATH = FORUM_GUIDE_DIR / "classic-update.md"
+X_COMPETENCE_GUIDE_PATH = FORUM_GUIDE_DIR / "x-competence-update.md"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -508,9 +509,14 @@ def update_questions_for_user(user: dict[str, Any]) -> list[Question]:
 def load_forum_guide_context(methodology: str | None = None, max_chars: int = 18000) -> str:
     parts: list[str] = []
     normalized = normalize_methodology(methodology)
-    for path in (COMMON_GUIDE_PATH, CLASSIC_GUIDE_PATH):
-        if path == CLASSIC_GUIDE_PATH and normalized and normalized != METHODOLOGY_CLASSIC:
-            continue
+    paths = [COMMON_GUIDE_PATH]
+    if normalized == METHODOLOGY_CLASSIC:
+        paths.append(CLASSIC_GUIDE_PATH)
+    elif normalized == METHODOLOGY_STRATEGY:
+        paths.append(X_COMPETENCE_GUIDE_PATH)
+    else:
+        paths.extend([CLASSIC_GUIDE_PATH, X_COMPETENCE_GUIDE_PATH])
+    for path in paths:
         if path.exists():
             parts.append(path.read_text(encoding="utf-8").strip())
     context = "\n\n---\n\n".join(part for part in parts if part)
@@ -1869,8 +1875,9 @@ async def show_forum_guide(update: Update, user: dict[str, Any]) -> None:
     await reply(
         update,
         "<b>Справочник форума</b>\n\n"
-        "Я сохранил материалы из фото: общие принципы форума, формулу общения, "
-        "правило 5%, окно Джохари, список чувств и классический Update.\n\n"
+        "Я сохранил текстовые материалы в Markdown: общие принципы форума, "
+        "формулу общения, правило 5%, окно Джохари, список чувств, "
+        "классический Update и формат X-Competence.\n\n"
         f"Твоя текущая методика апдейта: <b>{esc(methodology)}</b>.\n"
         "Можно спросить, например: «Можно ли это выносить на форум?» или "
         "«Оцени мой апдейт по методике».",
