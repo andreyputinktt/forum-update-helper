@@ -133,6 +133,10 @@ class Question:
 
 
 SPHERES = ("Моё дело", "Моя семья / близкие", "Я")
+RATING_7_WARNING = (
+    "Важно: оценка 7 коварная, мы не рекомендуем её использовать — она находится "
+    "между «хорошо» и «средне» и часто становится слишком нейтральным ответом."
+)
 
 UPDATE_QUESTIONS: list[Question] = []
 for sphere in SPHERES:
@@ -140,7 +144,8 @@ for sphere in SPHERES:
         [
             Question(
                 f"rating_{sphere}",
-                f"{sphere}: поставь оценку 1-10. Сравни с прошлым месяцем и коротко опиши, как себя чувствуешь.",
+                f"{sphere}: поставь оценку 1-10. Сравни с прошлым месяцем и коротко опиши, как себя чувствуешь. "
+                f"{RATING_7_WARNING}",
                 "Часть 1. Оценка трёх сфер",
             ),
             Question(
@@ -255,17 +260,17 @@ UPDATE_QUESTIONS.extend(
 CLASSIC_UPDATE_QUESTIONS = [
     Question(
         "classic_business_rating",
-        "Бизнес: поставь оценку месяца 1-10.",
+        f"Бизнес: поставь оценку месяца 1-10. {RATING_7_WARNING}",
         "Классический Update. Оценки месяца",
     ),
     Question(
         "classic_family_rating",
-        "Семья: поставь оценку месяца 1-10.",
+        f"Семья: поставь оценку месяца 1-10. {RATING_7_WARNING}",
         "Классический Update. Оценки месяца",
     ),
     Question(
         "classic_personal_rating",
-        "Личное: поставь оценку месяца 1-10.",
+        f"Личное: поставь оценку месяца 1-10. {RATING_7_WARNING}",
         "Классический Update. Оценки месяца",
     ),
 ]

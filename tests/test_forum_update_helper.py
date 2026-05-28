@@ -26,6 +26,11 @@ def test_update_question_counter_message():
     assert "Вопрос 4/" in message
 
 
+def test_rating_questions_warn_about_neutral_seven():
+    assert "оценка 7 коварная" in bot.UPDATE_QUESTIONS[0].prompt
+    assert "оценка 7 коварная" in bot.CLASSIC_UPDATE_QUESTIONS[0].prompt
+
+
 def test_append_answer_text_preserves_multiple_messages():
     assert bot.append_answer_text("", "первый фрагмент") == "первый фрагмент"
     assert bot.append_answer_text("первый фрагмент", "второй фрагмент") == "первый фрагмент\n\nвторой фрагмент"
