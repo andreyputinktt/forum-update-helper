@@ -194,7 +194,7 @@ def test_keep_files_keyboard_has_no_skip_or_duplicate_current_button():
     labels = [button.text for row in bot.keep_files_keyboard({"keep_files": 1}).inline_keyboard for button in row]
 
     assert labels.count("Сохранять") == 0
-    assert "Сохранять (текущее)" in labels
+    assert "Сохранять (рекомендуем, текущее)" in labels
     assert "Удалять" in labels
     assert "Пропустить" not in labels
 

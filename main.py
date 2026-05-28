@@ -846,7 +846,7 @@ def keep_files_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(
-                    "Сохранять (текущее)" if keep_is_current else "Сохранять",
+                    "Сохранять (рекомендуем, текущее)" if keep_is_current else "Сохранять (рекомендуем)",
                     callback_data="keep:1",
                 ),
                 InlineKeyboardButton(
