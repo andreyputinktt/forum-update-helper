@@ -19,6 +19,10 @@ def test_parse_forum_date_short_day_month_current_or_next_year():
     assert bot.parse_forum_date("14.03", base=date(2026, 5, 28)) == date(2027, 3, 14)
 
 
+def test_time_minus_minutes_for_post_forum_plan():
+    assert bot.time_minus_minutes(bot.parse_time("09:30"), 30).strftime("%H:%M") == "09:00"
+
+
 def test_update_question_counter_message():
     message = bot.question_message(bot.UPDATE_QUESTIONS[3], 3, len(bot.UPDATE_QUESTIONS))
 
@@ -50,14 +54,17 @@ def test_x_competence_rating_question_merges_previous_month_and_change():
 def test_x_competence_questions_are_condensed_by_sphere():
     keys = [question.key for question in bot.UPDATE_QUESTIONS]
 
-    assert len(bot.UPDATE_QUESTIONS) == 18
+    assert len(bot.UPDATE_QUESTIONS) == 16
     assert not any(key.startswith("impact_") for key in keys)
     assert not any(key.startswith("delta_") for key in keys)
     assert not any(key.startswith("past_action_") for key in keys)
     assert not any(key.startswith("past_failed_") for key in keys)
     assert not any(key.startswith("annual_goal_") for key in keys)
+    assert "meeting_gratitude" not in keys
+    assert "next_actions" not in keys
     assert "retrospective_Моё дело" in keys
     assert "next_period_Моё дело" in keys
+    assert [question.key for question in bot.POST_FORUM_PLAN_QUESTIONS] == ["meeting_gratitude", "next_actions"]
 
 
 def test_transcript_message_is_formatted_for_telegram():
@@ -69,6 +76,13 @@ def test_transcript_message_is_formatted_for_telegram():
     assert "Первое предложение. Второе предложение." in text
     assert "\n\nТретье предложение" in text
     assert "&lt;опасным&gt;" in text
+
+
+def test_question_message_shows_existing_answer_when_editing():
+    message = bot.question_message(bot.UPDATE_QUESTIONS[0], 0, len(bot.UPDATE_QUESTIONS), "старый ответ")
+
+    assert "Текущий ответ" in message
+    assert "старый ответ" in message
 
 
 def test_append_answer_text_preserves_multiple_messages():
@@ -111,27 +125,44 @@ def test_flow_keeps_step_until_next_and_appends_messages(tmp_path, monkeypatch):
     assert "Добавил к ответу" in replies[-1]
 
 
-def test_parse_answer_check_json():
-    assert bot.parse_answer_check_json('{"answered": true, "missing": ""}') == {"ok": True, "missing": ""}
-    assert bot.parse_answer_check_json('{"answered": "false", "missing": "нет ответа"}') == {
-        "ok": False,
-        "missing": "нет ответа",
-    }
-    assert bot.parse_answer_check_json('```json\n{"answered": false, "missing": "нет оценки прошлого месяца"}\n```') == {
-        "ok": False,
-        "missing": "нет оценки прошлого месяца",
-    }
+def test_edit_previous_update_preloads_answers(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    replies = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    now = bot.now_iso()
+    first_question = bot.UPDATE_QUESTIONS[0]
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, methodology, last_update_answers, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            123,
+            456,
+            "С личной стратегией (X-Competence)",
+            bot.json.dumps({first_question.key: "старый ответ"}, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(bot.begin_update_flow(None, test_store.get_user(123), edit_previous=True))
+
+    user = test_store.get_user(123)
+    payload = test_store.payload(user)
+    assert payload["mode"] == "edit"
+    assert payload["answers"][first_question.key] == "старый ответ"
+    assert "Текущий ответ" in replies[-1]
 
 
-def test_answer_check_rejects_empty_without_openai(monkeypatch):
-    monkeypatch.setattr(bot, "_openai", None)
-    result = bot.asyncio.run(bot.check_question_answer(bot.UPDATE_QUESTIONS[0], " "))
-
-    assert result["ok"] is False
-    assert "пустой" in result["missing"]
-
-
-def test_flow_next_does_not_skip_unanswered_question(tmp_path, monkeypatch):
+def test_flow_next_can_skip_unanswered_question(tmp_path, monkeypatch):
     test_store = bot.Store(tmp_path / "state.sqlite3")
     monkeypatch.setattr(bot, "store", test_store)
     replies = []
@@ -155,8 +186,8 @@ def test_flow_next_does_not_skip_unanswered_question(tmp_path, monkeypatch):
     bot.asyncio.run(bot.handle_flow_next(None, None, test_store.get_user(123)))
 
     user = test_store.get_user(123)
-    assert user["active_step"] == 0
-    assert "Сначала ответь" in replies[-1]
+    assert user["active_step"] == 1
+    assert "Вопрос 2/" in replies[-1]
 
 
 def test_build_update_markdown_contains_sections():
@@ -318,15 +349,21 @@ def test_flow_keyboard_uses_native_next_and_back_actions():
     labels = [button.text for row in keyboard for button in row]
     callbacks = [button.callback_data for row in keyboard for button in row]
 
-    assert labels == ["Назад", "Далее"]
+    assert labels == ["⬅️", "➡️"]
     assert callbacks == ["flow:back", "flow:next"]
     assert "Отменить сценарий" not in labels
+
+
+def test_update_start_keyboard_offers_new_or_edit():
+    labels = [button.text for row in bot.update_start_keyboard().inline_keyboard for button in row]
+
+    assert labels == ["Новый апдейт", "Изменить предыдущий"]
 
 
 def test_profile_has_download_files_button():
     labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
 
-    assert "Загрузить мои файлы" in labels
+    assert "Скачать апдейт" in labels
 
 
 def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):
@@ -406,6 +443,9 @@ def test_store_adds_diary_columns(tmp_path):
     assert "diary_enabled" in columns
     assert "diary_feedback_prompt" in columns
     assert "diary_reminder_time" in columns
+    assert "last_update_answers" in columns
+    assert "last_update_markdown" in columns
+    assert "last_post_forum_plan_answers" in columns
 
 
 def test_apply_diary_reminder_choice_sets_default_prompt(tmp_path, monkeypatch):

@@ -107,34 +107,36 @@ X-Competence format. While an update or health-check flow is active, the bot
 SHALL hide the persistent lower menu and SHALL NOT treat stale lower-menu button
 text as a questionnaire answer. The bot SHALL allow multiple text or voice
 messages for a single questionnaire step and SHALL NOT advance to the next step
-until the user presses "Далее". For X-Competence, the first question in each
+until the user presses the next-arrow button. The bot SHALL allow a user to leave
+a questionnaire step unanswered by pressing the next-arrow button. For
+X-Competence, the first question in each
 sphere SHALL ask for the current month rating, previous month rating, what
 changed, what contributed most, and the reason for upward or downward movement
 in one combined prompt. Closely related X-Competence prompts SHALL be merged
 when one answer can naturally cover them, including impact/dynamics,
-retrospective learnings, next-period planning, and meeting notes. Question
-messages SHALL show the current question number and SHALL NOT show a separate
-`Заполнено: X/Y` line.
+retrospective learnings and next-period planning. The meeting gratitude and
+next-actions questions SHALL NOT be part of the X-Competence update flow; they
+SHALL be asked after the forum before the health check. Question messages SHALL
+show the current question number and SHALL NOT show a separate `Заполнено: X/Y`
+line.
+
+#### Scenario: User starts update preparation
+- **WHEN** the user chooses to prepare an update
+- **THEN** the bot offers "Новый апдейт" and "Изменить предыдущий"
+- **AND** choosing "Изменить предыдущий" preloads prior answers when available
 
 #### Scenario: User advances through questions
-- **WHEN** the user answers a questionnaire step
-- **THEN** the bot confirms the answer and waits for the
-  user to press "Далее" before asking the next question
-- **AND** the flow controls include "Назад" and "Далее"
-- **AND** after "Далее" the bot checks with a cheap model whether the question was answered before advancing
-
-#### Scenario: User presses next without a sufficient answer
-- **WHEN** the user presses "Далее" and the current answer is empty or does not answer the question
-- **THEN** the bot explains what is missing
-- **AND** the bot stays on the current questionnaire step
+- **WHEN** the user presses the next-arrow button
+- **THEN** the bot advances to the next questionnaire step even when the current answer is empty
+- **AND** the flow controls use icon buttons for back and next
 
 #### Scenario: User sends multiple messages for one question
-- **WHEN** the user sends several text or voice messages before pressing "Далее"
+- **WHEN** the user sends several text or voice messages before pressing the next-arrow button
 - **THEN** the bot appends every message to the current question answer
-- **AND** the bot asks the next question only after the user presses "Далее"
+- **AND** the bot asks the next question only after the user presses the next-arrow button
 
 #### Scenario: User revisits a question
-- **WHEN** the user presses "Назад"
+- **WHEN** the user presses the back-arrow button
 - **THEN** the bot returns to the previous questionnaire step
 
 #### Scenario: User completes update preparation
@@ -160,8 +162,9 @@ the next year.
 
 #### Scenario: Post-forum health check is due
 - **WHEN** the stored forum date was yesterday
-- **THEN** the bot starts or offers the forum-group health check once for that
-  forum date
+- **THEN** the bot asks the personal action-plan questions thirty minutes before
+  the scheduled health-check time
+- **AND** the bot starts or offers the forum-group health check once for that forum date
 
 ### Requirement: Quarterly offsite reminder
 The bot SHALL remind each active user every three months to plan a personal

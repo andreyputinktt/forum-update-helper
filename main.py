@@ -57,7 +57,6 @@ PRE_FORUM_REMINDER_DAYS = tuple(
 )
 TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
-ANSWER_CHECK_MODEL = os.getenv("OPENAI_ANSWER_CHECK_MODEL", "gpt-4o-mini")
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
 OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
@@ -333,24 +332,27 @@ UPDATE_QUESTIONS.extend(
             "- что хочешь вынести из запросов других участников.",
             "Часть 4. Личный план действий",
         ),
-        Question(
-            "meeting_gratitude",
-            "Благодарность себе и другим: что важно не забыть проговорить?",
-            "Часть 4. Личный план действий",
-        ),
-        Question(
-            "next_actions",
-            "Опиши действия в ближайшее время.\n\n"
-            "Для каждого действия укажи:\n"
-            "- глагол совершенного вида;\n"
-            "- где и когда;\n"
-            "- с помощью чего;\n"
-            "- какой результат;\n"
-            "- срок.",
-            "Часть 4. Личный план действий",
-        ),
     ]
 )
+
+POST_FORUM_PLAN_QUESTIONS = [
+    Question(
+        "meeting_gratitude",
+        "Благодарность себе и другим: что важно не забыть проговорить?",
+        "Личный план действий",
+    ),
+    Question(
+        "next_actions",
+        "Опиши действия в ближайшее время.\n\n"
+        "Для каждого действия укажи:\n"
+        "- глагол совершенного вида;\n"
+        "- где и когда;\n"
+        "- с помощью чего;\n"
+        "- какой результат;\n"
+        "- срок.",
+        "Личный план действий",
+    ),
+]
 
 HEALTH_QUESTIONS = [
     Question("energy", "Оцени энергию форум-группы после встречи по шкале 1-10. Почему так?", "Здоровье группы"),
@@ -425,6 +427,12 @@ async def spaced_bot_send(chat_id: int | str, send_call: Any) -> Any:
 def parse_time(value: str) -> time:
     hour, minute = value.split(":", 1)
     return time(int(hour), int(minute), tzinfo=TZ)
+
+
+def time_minus_minutes(value: time, minutes: int) -> time:
+    anchor = datetime.combine(date(2000, 1, 1), value)
+    shifted = anchor - timedelta(minutes=minutes)
+    return shifted.timetz()
 
 
 def parse_forum_date(value: str, base: date | None = None) -> date | None:
@@ -573,6 +581,13 @@ class Store:
                 diary_enabled INTEGER DEFAULT 0,
                 diary_feedback_prompt TEXT,
                 diary_reminder_time TEXT,
+                last_update_answers TEXT DEFAULT '{}',
+                last_update_markdown TEXT,
+                last_update_filename TEXT,
+                last_update_methodology TEXT,
+                last_update_at TEXT,
+                last_post_forum_plan_answers TEXT DEFAULT '{}',
+                last_post_forum_plan_at TEXT,
                 last_offsite_reminder_date TEXT,
                 admin_notified INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -597,6 +612,13 @@ class Store:
         self._ensure_column("users", "diary_enabled", "INTEGER DEFAULT 0")
         self._ensure_column("users", "diary_feedback_prompt", "TEXT")
         self._ensure_column("users", "diary_reminder_time", "TEXT")
+        self._ensure_column("users", "last_update_answers", "TEXT DEFAULT '{}'")
+        self._ensure_column("users", "last_update_markdown", "TEXT")
+        self._ensure_column("users", "last_update_filename", "TEXT")
+        self._ensure_column("users", "last_update_methodology", "TEXT")
+        self._ensure_column("users", "last_update_at", "TEXT")
+        self._ensure_column("users", "last_post_forum_plan_answers", "TEXT DEFAULT '{}'")
+        self._ensure_column("users", "last_post_forum_plan_at", "TEXT")
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -893,12 +915,21 @@ def guide_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def update_start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Новый апдейт", callback_data="update:new")],
+            [InlineKeyboardButton("Изменить предыдущий", callback_data="update:edit")],
+        ]
+    )
+
+
 def flow_keyboard(_show_next: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Назад", callback_data="flow:back"),
-                InlineKeyboardButton("Далее", callback_data="flow:next"),
+                InlineKeyboardButton("⬅️", callback_data="flow:back"),
+                InlineKeyboardButton("➡️", callback_data="flow:next"),
             ]
         ]
     )
@@ -1033,7 +1064,7 @@ async def send_about(update: Update) -> None:
         "• спрашивать дату следующего форума при старте;\n"
         "• за 3 дня до форума начинать подготовку с первого вопроса апдейта;\n"
         "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
-        "• проводить весь апдейт вопрос за вопросом с кнопкой «Далее» и счётчиком;\n"
+        "• проводить весь апдейт вопрос за вопросом с кнопкой ➡️;\n"
         "• выгружать сохранённые апдейты в формате .md, чтобы их было удобно дать ИИ;\n"
         "• выгружать единый MD-файл стандарта форума с инструкцией для ИИ-агента;\n"
         "• отвечать на вопросы по сохранённым материалам форума;\n"
@@ -1156,6 +1187,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_onboarding_skip(update, context, data.split(":", 1)[1])
     elif data == "menu:update":
         await start_update_flow(update, user)
+    elif data == "update:new":
+        await begin_update_flow(update, user, edit_previous=False)
+    elif data == "update:edit":
+        await begin_update_flow(update, user, edit_previous=True)
     elif data == "menu:date":
         await ask_next_forum_date(update, user)
     elif data == "menu:health":
@@ -1276,7 +1311,7 @@ async def route_text(
     if lower in shortcuts and user.get("active_flow"):
         await reply(
             update,
-            "Сейчас идёт сценарий. Используй кнопки «Назад» и «Далее» под вопросом или отправь ответ текстом/голосом.",
+            "Сейчас идёт сценарий. Используй кнопки ⬅️ и ➡️ под вопросом или отправь ответ текстом/голосом.",
             reply_markup=flow_keyboard(),
         )
         return
@@ -1314,6 +1349,10 @@ async def route_text(
 
     if user.get("active_flow") == "health":
         await handle_question_answer(update, context, user, text, HEALTH_QUESTIONS)
+        return
+
+    if user.get("active_flow") == "post_forum_plan":
+        await handle_question_answer(update, context, user, text, POST_FORUM_PLAN_QUESTIONS)
         return
 
     if user.get("diary_enabled"):
@@ -1747,7 +1786,7 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
                 InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
             ],
-            [InlineKeyboardButton("Загрузить мои файлы", callback_data="profile:download_files")],
+            [InlineKeyboardButton("Скачать апдейт", callback_data="profile:download_files")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
@@ -1861,28 +1900,44 @@ def saved_update_files(user: dict[str, Any]) -> list[Path]:
 async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
     files = saved_update_files(user)
     if not files:
+        markdown = str(user.get("last_update_markdown") or "").strip()
+        if markdown and update.effective_message and update.effective_chat:
+            filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
+            tmp = tempfile.NamedTemporaryFile(prefix="forum-update-", suffix=".md", delete=False)
+            tmp_path = Path(tmp.name)
+            try:
+                tmp.write(markdown.encode("utf-8"))
+                tmp.close()
+                with tmp_path.open("rb") as fh:
+                    await spaced_bot_send(
+                        update.effective_chat.id,
+                        lambda: update.effective_message.reply_document(
+                            document=fh,
+                            filename=filename,
+                            caption="Форумный апдейт в .md — можно передать ИИ.",
+                        ),
+                    )
+            finally:
+                tmp_path.unlink(missing_ok=True)
+            return
         await reply(
             update,
-            "Сохранённых .md апдейтов пока нет. Чтобы они появлялись, включи сохранение файлов "
-            "в личном кабинете или на шаге 6 при /start.",
+            "Сохранённых .md апдейтов пока нет. Сначала подготовь апдейт.",
             reply_markup=profile_cabinet_keyboard(),
         )
         return
     if update.effective_message is None or update.effective_chat is None:
         return
-    await reply(update, f"Нашёл сохранённые .md апдейты: <b>{len(files)}</b>. Отправляю последние файлы.")
-    for path in files[:10]:
-        with path.open("rb") as fh:
-            await spaced_bot_send(
-                update.effective_chat.id,
-                lambda path=path, fh=fh: update.effective_message.reply_document(
-                    document=fh,
-                    filename=path.name,
-                    caption="Форумный апдейт в .md — можно передать ИИ.",
-                ),
-            )
-    if len(files) > 10:
-        await reply(update, f"Отправил последние 10 файлов из {len(files)}. Остальные оставил на сервере.")
+    path = files[0]
+    with path.open("rb") as fh:
+        await spaced_bot_send(
+            update.effective_chat.id,
+            lambda path=path, fh=fh: update.effective_message.reply_document(
+                document=fh,
+                filename=path.name,
+                caption="Форумный апдейт в .md — можно передать ИИ.",
+            ),
+        )
 
 
 async def show_forum_guide(update: Update, user: dict[str, Any]) -> None:
@@ -2093,14 +2148,39 @@ async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
     if not is_profile_complete(user):
         await start_onboarding(update, None, user)  # type: ignore[arg-type]
         return
-    methodology = methodology_for_user(user)
-    questions = update_questions_for_user(user)
-    user = store.set_flow(user["telegram_user_id"], "update", 0, {"answers": {}})
+    store.update_user(user["telegram_user_id"], active_flow=None, state=None)
     await reply(
         update,
-        f"<b>Начинаем апдейт: {esc(methodology)}</b>\n\n"
+        "<b>Как будем готовить апдейт?</b>\n\n"
+        "Можно начать с чистого листа или открыть предыдущие ответы и добавлять к ним новые мысли.",
+        reply_markup=update_start_keyboard(),
+    )
+
+
+async def begin_update_flow(update: Update, user: dict[str, Any], edit_previous: bool = False) -> None:
+    methodology = methodology_for_user(user)
+    questions = update_questions_for_user(user)
+    answers: dict[str, str] = {}
+    mode = "new"
+    if edit_previous:
+        previous_answers = parse_json_dict(user.get("last_update_answers"))
+        matching_answers = {
+            key: str(value)
+            for key, value in previous_answers.items()
+            if key in {question.key for question in questions} and str(value).strip()
+        }
+        if matching_answers:
+            answers = matching_answers
+            mode = "edit"
+        else:
+            await reply(update, "Предыдущих ответов для этой методики не нашёл. Начинаем новый апдейт.")
+    user = store.set_flow(user["telegram_user_id"], "update", 0, {"answers": answers, "mode": mode})
+    await reply(
+        update,
+        f"<b>{'Изменяем предыдущий апдейт' if mode == 'edit' else 'Начинаем новый апдейт'}: {esc(methodology)}</b>\n\n"
         "Будем идти по всем вопросам. На один вопрос можно отправить несколько сообщений текстом или голосом. "
-        "Я не перейду к следующему вопросу, пока ты не нажмёшь «Далее». "
+        "Я не перейду к следующему вопросу, пока ты не нажмёшь ➡️. "
+        "Можно оставить вопрос без ответа и просто нажать ➡️. "
         "В конце я соберу Markdown-файл апдейта. На время сценария нижнее меню скрыто, "
         "чтобы его кнопки не попадали в ответы.",
         reply_markup=ReplyKeyboardRemove(),
@@ -2117,7 +2197,8 @@ async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
         update,
         "<b>Health check форум-группы</b>\n\n"
         "Отвечай честно и конкретно. На один вопрос можно отправить несколько сообщений; "
-        "к следующему вопросу я перейду только после кнопки «Далее». "
+        "к следующему вопросу я перейду только после кнопки ➡️. "
+        "Можно оставить вопрос без ответа и просто нажать ➡️. "
         "В конце я соберу отчёт и попробую отправить "
         "его указанному Telegram-пользователю, если он уже запускал бота. "
         "На время сценария нижнее меню скрыто.",
@@ -2126,12 +2207,27 @@ async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
     await ask_current_question(update, user, HEALTH_QUESTIONS)
 
 
-def question_message(question: Question, step: int, total: int) -> str:
-    return (
+def question_message(question: Question, step: int, total: int, current_answer: str = "") -> str:
+    message = (
         f"<b>{esc(question.section)}</b>\n"
         f"Вопрос {step + 1}/{total}\n\n"
         f"{esc(question.prompt)}"
     )
+    answer = current_answer.strip()
+    if answer:
+        message += f"\n\n<b>Текущий ответ</b>\n<blockquote>{esc(clip(answer, 1600))}</blockquote>"
+    return message
+
+
+def flow_questions_for_user(user: dict[str, Any]) -> list[Question]:
+    flow = user.get("active_flow")
+    if flow == "update":
+        return update_questions_for_user(user)
+    if flow == "health":
+        return HEALTH_QUESTIONS
+    if flow == "post_forum_plan":
+        return POST_FORUM_PLAN_QUESTIONS
+    return []
 
 
 async def ask_current_question(
@@ -2143,10 +2239,12 @@ async def ask_current_question(
     if step >= len(questions):
         return
     question = questions[step]
+    payload = store.payload(user)
+    answers = payload.setdefault("answers", {})
     store.update_user(user["telegram_user_id"], state=None)
     await reply(
         update,
-        question_message(question, step, len(questions)),
+        question_message(question, step, len(questions), str(answers.get(question.key) or "")),
         reply_markup=flow_keyboard(False),
     )
 
@@ -2156,41 +2254,13 @@ async def handle_flow_next(
     context: ContextTypes.DEFAULT_TYPE,
     user: dict[str, Any],
 ) -> None:
-    flow = user.get("active_flow")
-    if flow == "update":
-        questions = update_questions_for_user(user)
-    elif flow == "health":
-        questions = HEALTH_QUESTIONS
-    else:
+    questions = flow_questions_for_user(user)
+    if not questions:
         await reply(update, "Активного сценария нет. Выбери действие в меню.", reply_markup=MAIN_KEYBOARD)
         return
-    if user.get("state") != "flow:await_next":
-        step = int(user.get("active_step") or 0)
-        if step >= len(questions):
-            await finish_flow(update, context, user)
-            return
-        await reply(
-            update,
-            "Сначала ответь на вопрос текстом или голосом. После этого нажми «Далее».",
-            reply_markup=flow_keyboard(True),
-        )
-        return
     step = int(user.get("active_step") or 0)
-    payload = store.payload(user)
-    answers = payload.setdefault("answers", {})
     if step >= len(questions):
         await finish_flow(update, context, user)
-        return
-    answer = str(answers.get(questions[step].key) or "").strip()
-    check = await check_question_answer(questions[step], answer)
-    if not check["ok"]:
-        await reply(
-            update,
-            "Пока не перехожу дальше.\n\n"
-            f"Не хватает: {esc(check['missing'])}\n\n"
-            "Дополни ответ текстом или голосом, потом снова нажми «Далее».",
-            reply_markup=flow_keyboard(True),
-        )
         return
     user = store.update_user(user["telegram_user_id"], active_step=step + 1, state=None)
     if step + 1 >= len(questions):
@@ -2200,12 +2270,8 @@ async def handle_flow_next(
 
 
 async def handle_flow_back(update: Update, user: dict[str, Any]) -> None:
-    flow = user.get("active_flow")
-    if flow == "update":
-        questions = update_questions_for_user(user)
-    elif flow == "health":
-        questions = HEALTH_QUESTIONS
-    else:
+    questions = flow_questions_for_user(user)
+    if not questions:
         await reply(update, "Активного сценария нет. Выбери действие в меню.", reply_markup=MAIN_KEYBOARD)
         return
 
@@ -2241,7 +2307,7 @@ async def handle_question_answer(
     verb = "Добавил к ответу" if had_answer else "Записал"
     await reply(
         update,
-        f"{verb}. Можно прислать ещё сообщение к этому вопросу или нажать «Далее».",
+        f"{verb}. Можно прислать ещё сообщение к этому вопросу или нажать ➡️.",
         reply_markup=flow_keyboard(True),
     )
 
@@ -2258,6 +2324,8 @@ async def finish_flow(
         await finish_update_flow(update, context, user, answers)
     elif flow == "health":
         await finish_health_flow(update, context, user, answers)
+    elif flow == "post_forum_plan":
+        await finish_post_forum_plan(update, user, answers)
     store.set_flow(user["telegram_user_id"], None)
 
 
@@ -2278,64 +2346,12 @@ def append_answer_text(existing: str, text: str) -> str:
     return f"{clean_existing}\n\n{clean_text}"
 
 
-async def check_question_answer(question: Question, answer: str) -> dict[str, Any]:
-    answer = answer.strip()
-    if not answer:
-        return {"ok": False, "missing": "ответ пока пустой"}
-    if _openai is None:
-        return {"ok": True, "missing": ""}
-
-    prompt = (
-        "Проверь, отвечает ли пользователь по существу на вопрос текущего форумного сценария.\n"
-        "Не оценивай качество глубоко, только наличие ответа. Будь мягким, но не пропускай пустые, "
-        "случайные или явно нерелевантные ответы.\n\n"
-        "Для вопроса про оценку текущего месяца, оценку прошлого месяца и изменения ответ считается полученным, "
-        "если есть хотя бы осмысленная оценка/сравнение и описание изменения; если нет одной части, укажи её.\n\n"
-        f"Вопрос:\n{question.prompt}\n\n"
-        f"Ответ пользователя:\n{answer[:4000]}\n\n"
-        'Верни только JSON: {"answered": true/false, "missing": "коротко чего не хватает"}'
-    )
-
-    def _call() -> str:
-        response = _openai.responses.create(
-            model=ANSWER_CHECK_MODEL,
-            input=prompt,
-            max_output_tokens=140,
-            text={"verbosity": "low"},
-        )
-        return extract_response_text(response)
-
+def parse_json_dict(value: Any) -> dict[str, Any]:
     try:
-        raw = await asyncio.to_thread(_call)
-        parsed = parse_answer_check_json(raw)
-        if parsed is not None:
-            return parsed
-    except Exception as exc:
-        log.warning("answer check failed question=%s error=%s", question.key, exc)
-    return {"ok": True, "missing": ""}
-
-
-def parse_answer_check_json(raw: str) -> dict[str, Any] | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end >= start:
-        text = text[start : end + 1]
-    try:
-        data = json.loads(text)
+        parsed = json.loads(str(value or "{}"))
     except json.JSONDecodeError:
-        return None
-    raw_answered = data.get("answered")
-    if isinstance(raw_answered, bool):
-        answered = raw_answered
-    else:
-        answered = str(raw_answered).strip().casefold() in {"true", "1", "yes", "да"}
-    missing = str(data.get("missing") or "").strip()
-    if not answered and not missing:
-        missing = "нужно ответить на сам вопрос"
-    return {"ok": answered, "missing": missing}
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def build_update_markdown(
@@ -2412,6 +2428,7 @@ def build_ai_forum_standard_markdown(user: dict[str, Any]) -> str:
     lines.extend(question_list_markdown(methodology, selected_questions))
     lines.extend(question_list_markdown("Классическая методика (YPO)", CLASSIC_UPDATE_QUESTIONS))
     lines.extend(question_list_markdown("С личной стратегией (X-Competence)", UPDATE_QUESTIONS))
+    lines.extend(question_list_markdown("Постфорумный личный план действий", POST_FORUM_PLAN_QUESTIONS))
     lines.extend(
         [
             "## Справочник и методологические материалы",
@@ -2513,6 +2530,14 @@ async def finish_update_flow(
     user_dir = UPDATES_DIR / str(user["telegram_user_id"])
     user_dir.mkdir(parents=True, exist_ok=True)
     filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
+    store.update_user(
+        user["telegram_user_id"],
+        last_update_answers=json.dumps(answers, ensure_ascii=False),
+        last_update_markdown=content,
+        last_update_filename=filename,
+        last_update_methodology=methodology_for_user(user),
+        last_update_at=now_iso(),
+    )
     path = user_dir / filename
     path.write_text(content, encoding="utf-8")
     if update.effective_message and update.effective_chat:
@@ -2529,6 +2554,19 @@ async def finish_update_flow(
     if not user.get("keep_files"):
         path.unlink(missing_ok=True)
     await reply(update, "После форума я спрошу здоровье группы на следующее утро.", reply_markup=MAIN_KEYBOARD)
+
+
+async def finish_post_forum_plan(update: Update, user: dict[str, Any], answers: dict[str, str]) -> None:
+    store.update_user(
+        user["telegram_user_id"],
+        last_post_forum_plan_answers=json.dumps(answers, ensure_ascii=False),
+        last_post_forum_plan_at=now_iso(),
+    )
+    await reply(
+        update,
+        "Личный план действий зафиксировал. Следующим шагом спрошу здоровье форум-группы.",
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 def build_health_report(user: dict[str, Any], answers: dict[str, str]) -> str:
@@ -2710,6 +2748,59 @@ async def daily_maintenance(context: ContextTypes.DEFAULT_TYPE) -> None:
             log.exception("daily maintenance failed for user_id=%s", user.get("telegram_user_id"))
 
 
+async def post_forum_plan_maintenance(context: ContextTypes.DEFAULT_TYPE) -> None:
+    today = datetime.now(TZ).date()
+    for user in store.complete_users():
+        if not is_profile_complete(user):
+            continue
+        try:
+            await maybe_send_post_forum_plan(context, user, today)
+        except Exception:
+            log.exception("post-forum plan maintenance failed for user_id=%s", user.get("telegram_user_id"))
+
+
+async def maybe_send_post_forum_plan(
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    today: date,
+) -> None:
+    value = user.get("next_forum_date")
+    if not value:
+        return
+    forum_date = date.fromisoformat(value)
+    if today != forum_date + timedelta(days=1):
+        return
+    if store.reminder_sent(user["telegram_user_id"], "post_forum_plan", value):
+        return
+    fresh = store.get_user(user["telegram_user_id"]) or user
+    chat_id = int(fresh["chat_id"])
+    if fresh.get("active_flow"):
+        await safe_send(
+            context,
+            chat_id,
+            "Перед health check нужно зафиксировать личный план действий, но у тебя уже открыт другой сценарий. "
+            "Закончи его или нажми /cancel.",
+        )
+        store.mark_reminder(user["telegram_user_id"], "post_forum_plan", value)
+        return
+    fresh = store.set_flow(user["telegram_user_id"], "post_forum_plan", 0, {"answers": {}})
+    await safe_send(
+        context,
+        chat_id,
+        "<b>Личный план действий после форума</b>\n\n"
+        "Перед health check зафиксируем две вещи: благодарность и ближайшие действия. "
+        "Можно отвечать текстом или голосом, а можно оставить вопрос пустым и нажать ➡️.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await safe_send(
+        context,
+        chat_id,
+        question_message(POST_FORUM_PLAN_QUESTIONS[0], 0, len(POST_FORUM_PLAN_QUESTIONS)),
+        reply_markup=flow_keyboard(False),
+    )
+    store.mark_reminder(user["telegram_user_id"], "post_forum_plan", value)
+
+
 async def maybe_send_forum_reminders(
     context: ContextTypes.DEFAULT_TYPE,
     user: dict[str, Any],
@@ -2727,23 +2818,20 @@ async def maybe_send_forum_reminders(
         if not store.reminder_sent(user["telegram_user_id"], reminder_type, value):
             fresh = store.get_user(user["telegram_user_id"]) or user
             if not fresh.get("active_flow"):
-                questions = update_questions_for_user(fresh)
                 methodology = methodology_for_user(fresh)
-                store.set_flow(user["telegram_user_id"], "update", 0, {"answers": {}})
                 await safe_send(
                     context,
                     chat_id,
                     "<b>Пора готовить форумный апдейт</b>\n\n"
-                    f"До форума {days_left} дн. Начинаю подготовку по методике {esc(methodology)}. "
-                    "На один вопрос можно отправить несколько сообщений текстом или голосом; "
-                    "к следующему вопросу я перейду только после кнопки «Далее».",
+                    f"До форума {days_left} дн. Методика: {esc(methodology)}.\n\n"
+                    "Выбери: начать новый апдейт или изменить предыдущий.",
                     reply_markup=ReplyKeyboardRemove(),
                 )
                 await safe_send(
                     context,
                     chat_id,
-                    question_message(questions[0], 0, len(questions)),
-                    reply_markup=flow_keyboard(False),
+                    "Как будем готовить?",
+                    reply_markup=update_start_keyboard(),
                 )
             else:
                 await safe_send(
@@ -2765,7 +2853,7 @@ async def maybe_send_forum_reminders(
                     chat_id,
                     "<b>Утро после форума</b>\n\n"
                     "Давай зафиксируем здоровье форум-группы. На один вопрос можно отправить несколько сообщений; "
-                    "к следующему вопросу я перейду только после кнопки «Далее». Первый вопрос:",
+                    "к следующему вопросу я перейду только после кнопки ➡️. Первый вопрос:",
                     reply_markup=ReplyKeyboardRemove(),
                 )
                 await safe_send(
@@ -2841,6 +2929,12 @@ async def diary_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(application: Application) -> None:
     maintenance_time = parse_time(DAILY_MAINTENANCE_TIME)
+    post_forum_plan_time = time_minus_minutes(maintenance_time, 30)
+    application.job_queue.run_daily(
+        post_forum_plan_maintenance,
+        time=post_forum_plan_time,
+        name="post-forum-plan-maintenance",
+    )
     application.job_queue.run_daily(daily_maintenance, time=maintenance_time, name="daily-maintenance")
     application.job_queue.run_daily(diary_reminder_job, time=parse_time("21:00"), data="21", name="diary-reminder-21")
     application.job_queue.run_daily(diary_reminder_job, time=parse_time("08:00"), data="08", name="diary-reminder-08")
