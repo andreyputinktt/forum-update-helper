@@ -1252,10 +1252,6 @@ async def route_text(
         await handle_profile_edit_text(update, user, text)
         return
 
-    if user.get("state") == "flow:await_next" and user.get("active_flow"):
-        await reply(update, "Ответ записан. Нажми «Далее», чтобы перейти к следующему вопросу.", reply_markup=flow_keyboard(True))
-        return
-
     if user.get("active_flow") == "update":
         await handle_question_answer(update, context, user, text, update_questions_for_user(user))
         return
@@ -1960,7 +1956,8 @@ async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
     await reply(
         update,
         f"<b>Начинаем апдейт: {esc(methodology)}</b>\n\n"
-        "Будем идти по всем вопросам. Отвечай коротко или голосом. "
+        "Будем идти по всем вопросам. На один вопрос можно отправить несколько сообщений текстом или голосом. "
+        "Я не перейду к следующему вопросу, пока ты не нажмёшь «Далее». "
         "В конце я соберу Markdown-файл апдейта. На время сценария нижнее меню скрыто, "
         "чтобы его кнопки не попадали в ответы.",
         reply_markup=ReplyKeyboardRemove(),
@@ -1976,7 +1973,9 @@ async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
     await reply(
         update,
         "<b>Health check форум-группы</b>\n\n"
-        "Отвечай честно и конкретно. В конце я соберу отчёт и попробую отправить "
+        "Отвечай честно и конкретно. На один вопрос можно отправить несколько сообщений; "
+        "к следующему вопросу я перейду только после кнопки «Далее». "
+        "В конце я соберу отчёт и попробую отправить "
         "его указанному Telegram-пользователю, если он уже запускал бота. "
         "На время сценария нижнее меню скрыто.",
         reply_markup=ReplyKeyboardRemove(),
@@ -2042,8 +2041,9 @@ async def handle_flow_next(
             return
         await ask_current_question(update, user, questions)
         return
-    user = store.update_user(user["telegram_user_id"], state=None)
-    if int(user.get("active_step") or 0) >= len(questions):
+    step = int(user.get("active_step") or 0)
+    user = store.update_user(user["telegram_user_id"], active_step=step + 1, state=None)
+    if step + 1 >= len(questions):
         await finish_flow(update, context, user)
         return
     await ask_current_question(update, user, questions)
@@ -2080,21 +2080,19 @@ async def handle_question_answer(
         return
 
     question = questions[step]
-    answers[question.key] = text
-    next_step = step + 1
+    had_answer = bool(str(answers.get(question.key) or "").strip())
+    answers[question.key] = append_answer_text(answers.get(question.key, ""), text)
     user = store.update_user(
         user["telegram_user_id"],
-        active_step=next_step,
         flow_payload=json.dumps(payload, ensure_ascii=False),
         state="flow:await_next",
     )
-    if next_step >= len(questions):
-        await finish_flow(update, context, user)
-        return
 
+    verb = "Добавил к ответу" if had_answer else "Записал"
     await reply(
         update,
-        f"Записал. Заполнено: <b>{next_step}/{len(questions)}</b>.",
+        f"{verb}. Заполнено: <b>{step + 1}/{len(questions)}</b>. "
+        "Можно прислать ещё сообщение к этому вопросу или нажать «Далее».",
         reply_markup=flow_keyboard(True),
     )
 
@@ -2119,6 +2117,16 @@ def answers_by_section(answers: dict[str, str], questions: list[Question]) -> di
     for question in questions:
         grouped.setdefault(question.section, []).append((question.prompt, answers.get(question.key, "")))
     return grouped
+
+
+def append_answer_text(existing: str, text: str) -> str:
+    clean_existing = str(existing or "").strip()
+    clean_text = text.strip()
+    if not clean_existing:
+        return clean_text
+    if not clean_text:
+        return clean_existing
+    return f"{clean_existing}\n\n{clean_text}"
 
 
 def build_update_markdown(
@@ -2518,7 +2526,8 @@ async def maybe_send_forum_reminders(
                     chat_id,
                     "<b>Пора готовить форумный апдейт</b>\n\n"
                     f"До форума {days_left} дн. Начинаю подготовку по методике {esc(methodology)}. "
-                    "Отвечай текстом или голосом.",
+                    "На один вопрос можно отправить несколько сообщений текстом или голосом; "
+                    "к следующему вопросу я перейду только после кнопки «Далее».",
                     reply_markup=ReplyKeyboardRemove(),
                 )
                 await safe_send(
@@ -2546,7 +2555,8 @@ async def maybe_send_forum_reminders(
                     context,
                     chat_id,
                     "<b>Утро после форума</b>\n\n"
-                    "Давай зафиксируем здоровье форум-группы. Первый вопрос:",
+                    "Давай зафиксируем здоровье форум-группы. На один вопрос можно отправить несколько сообщений; "
+                    "к следующему вопросу я перейду только после кнопки «Далее». Первый вопрос:",
                     reply_markup=ReplyKeyboardRemove(),
                 )
                 await safe_send(

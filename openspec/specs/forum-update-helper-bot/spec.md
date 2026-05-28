@@ -96,13 +96,20 @@ methodology. For `Классическая (YPO)`, the bot SHALL use the classic
 update format. For `С личной стратегией (X-Competence)`, the bot SHALL use the
 X-Competence format. While an update or health-check flow is active, the bot
 SHALL hide the persistent lower menu and SHALL NOT treat stale lower-menu button
-text as a questionnaire answer.
+text as a questionnaire answer. The bot SHALL allow multiple text or voice
+messages for a single questionnaire step and SHALL NOT advance to the next step
+until the user presses "Далее".
 
 #### Scenario: User advances through questions
 - **WHEN** the user answers a questionnaire step
 - **THEN** the bot shows a filled counter such as `3/50` and waits for the
   user to press "Далее" before asking the next question
 - **AND** the flow controls include "Назад" and "Далее"
+
+#### Scenario: User sends multiple messages for one question
+- **WHEN** the user sends several text or voice messages before pressing "Далее"
+- **THEN** the bot appends every message to the current question answer
+- **AND** the bot asks the next question only after the user presses "Далее"
 
 #### Scenario: User skips or revisits a question
 - **WHEN** the user presses "Далее" on an unanswered questionnaire step

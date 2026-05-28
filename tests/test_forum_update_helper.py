@@ -26,6 +26,46 @@ def test_update_question_counter_message():
     assert "Вопрос 4/" in message
 
 
+def test_append_answer_text_preserves_multiple_messages():
+    assert bot.append_answer_text("", "первый фрагмент") == "первый фрагмент"
+    assert bot.append_answer_text("первый фрагмент", "второй фрагмент") == "первый фрагмент\n\nвторой фрагмент"
+    assert bot.append_answer_text("первый фрагмент", "   ") == "первый фрагмент"
+
+
+def test_flow_keeps_step_until_next_and_appends_messages(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    replies = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, active_flow, active_step, flow_payload,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (123, 456, "update", 0, "{}", now, now),
+    )
+    test_store.conn.commit()
+    questions = [bot.Question("q1", "Первый вопрос", "Секция"), bot.Question("q2", "Второй вопрос", "Секция")]
+
+    bot.asyncio.run(bot.handle_question_answer(None, None, test_store.get_user(123), "первый фрагмент", questions))
+    user = test_store.get_user(123)
+    bot.asyncio.run(bot.handle_question_answer(None, None, user, "второй фрагмент", questions))
+
+    user = test_store.get_user(123)
+    payload = test_store.payload(user)
+    assert user["active_step"] == 0
+    assert user["state"] == "flow:await_next"
+    assert payload["answers"]["q1"] == "первый фрагмент\n\nвторой фрагмент"
+    assert "Добавил к ответу" in replies[-1]
+
+
 def test_build_update_markdown_contains_sections():
     user = {
         "forum_group": "High Level",
