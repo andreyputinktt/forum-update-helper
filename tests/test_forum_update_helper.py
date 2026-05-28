@@ -31,6 +31,13 @@ def test_rating_questions_warn_about_neutral_seven():
     assert "оценка 7 коварная" in bot.CLASSIC_UPDATE_QUESTIONS[0].prompt
 
 
+def test_x_competence_rating_question_merges_previous_month_and_change():
+    assert "оценку этого месяца" in bot.UPDATE_QUESTIONS[0].prompt
+    assert "оценку предыдущего месяца" in bot.UPDATE_QUESTIONS[0].prompt
+    assert "что изменилось" in bot.UPDATE_QUESTIONS[0].prompt
+    assert not any(question.key.startswith("changed_") for question in bot.UPDATE_QUESTIONS)
+
+
 def test_append_answer_text_preserves_multiple_messages():
     assert bot.append_answer_text("", "первый фрагмент") == "первый фрагмент"
     assert bot.append_answer_text("первый фрагмент", "второй фрагмент") == "первый фрагмент\n\nвторой фрагмент"
@@ -69,6 +76,54 @@ def test_flow_keeps_step_until_next_and_appends_messages(tmp_path, monkeypatch):
     assert user["state"] == "flow:await_next"
     assert payload["answers"]["q1"] == "первый фрагмент\n\nвторой фрагмент"
     assert "Добавил к ответу" in replies[-1]
+
+
+def test_parse_answer_check_json():
+    assert bot.parse_answer_check_json('{"answered": true, "missing": ""}') == {"ok": True, "missing": ""}
+    assert bot.parse_answer_check_json('{"answered": "false", "missing": "нет ответа"}') == {
+        "ok": False,
+        "missing": "нет ответа",
+    }
+    assert bot.parse_answer_check_json('```json\n{"answered": false, "missing": "нет оценки прошлого месяца"}\n```') == {
+        "ok": False,
+        "missing": "нет оценки прошлого месяца",
+    }
+
+
+def test_answer_check_rejects_empty_without_openai(monkeypatch):
+    monkeypatch.setattr(bot, "_openai", None)
+    result = bot.asyncio.run(bot.check_question_answer(bot.UPDATE_QUESTIONS[0], " "))
+
+    assert result["ok"] is False
+    assert "пустой" in result["missing"]
+
+
+def test_flow_next_does_not_skip_unanswered_question(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    replies = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, active_flow, active_step, flow_payload,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (123, 456, "update", 0, "{}", now, now),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(bot.handle_flow_next(None, None, test_store.get_user(123)))
+
+    user = test_store.get_user(123)
+    assert user["active_step"] == 0
+    assert "Сначала ответь" in replies[-1]
 
 
 def test_build_update_markdown_contains_sections():

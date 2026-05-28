@@ -105,22 +105,28 @@ X-Competence format. While an update or health-check flow is active, the bot
 SHALL hide the persistent lower menu and SHALL NOT treat stale lower-menu button
 text as a questionnaire answer. The bot SHALL allow multiple text or voice
 messages for a single questionnaire step and SHALL NOT advance to the next step
-until the user presses "Далее".
+until the user presses "Далее". For X-Competence, the first question in each
+sphere SHALL ask for the current month rating, previous month rating, and what
+changed in one combined prompt.
 
 #### Scenario: User advances through questions
 - **WHEN** the user answers a questionnaire step
 - **THEN** the bot shows a filled counter such as `3/50` and waits for the
   user to press "Далее" before asking the next question
 - **AND** the flow controls include "Назад" and "Далее"
+- **AND** after "Далее" the bot checks with a cheap model whether the question was answered before advancing
+
+#### Scenario: User presses next without a sufficient answer
+- **WHEN** the user presses "Далее" and the current answer is empty or does not answer the question
+- **THEN** the bot explains what is missing
+- **AND** the bot stays on the current questionnaire step
 
 #### Scenario: User sends multiple messages for one question
 - **WHEN** the user sends several text or voice messages before pressing "Далее"
 - **THEN** the bot appends every message to the current question answer
 - **AND** the bot asks the next question only after the user presses "Далее"
 
-#### Scenario: User skips or revisits a question
-- **WHEN** the user presses "Далее" on an unanswered questionnaire step
-- **THEN** the bot skips that step and asks the next question
+#### Scenario: User revisits a question
 - **WHEN** the user presses "Назад"
 - **THEN** the bot returns to the previous questionnaire step
 

@@ -57,6 +57,7 @@ PRE_FORUM_REMINDER_DAYS = tuple(
 )
 TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+ANSWER_CHECK_MODEL = os.getenv("OPENAI_ANSWER_CHECK_MODEL", "gpt-4o-mini")
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
 OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
@@ -144,13 +145,9 @@ for sphere in SPHERES:
         [
             Question(
                 f"rating_{sphere}",
-                f"{sphere}: поставь оценку 1-10. Сравни с прошлым месяцем и коротко опиши, как себя чувствуешь. "
+                f"{sphere}: поставь оценку этого месяца 1-10, оценку предыдущего месяца 1-10 "
+                f"и коротко опиши, что изменилось. "
                 f"{RATING_7_WARNING}",
-                "Часть 1. Оценка трёх сфер",
-            ),
-            Question(
-                f"changed_{sphere}",
-                f"{sphere}: что конкретно изменилось с прошлого раза?",
                 "Часть 1. Оценка трёх сфер",
             ),
             Question(
@@ -2149,21 +2146,29 @@ async def handle_flow_next(
         if step >= len(questions):
             await finish_flow(update, context, user)
             return
-        payload = store.payload(user)
-        answers = payload.setdefault("answers", {})
-        answers.setdefault(questions[step].key, "")
-        user = store.update_user(
-            user["telegram_user_id"],
-            active_step=step + 1,
-            flow_payload=json.dumps(payload, ensure_ascii=False),
-            state=None,
+        await reply(
+            update,
+            "Сначала ответь на вопрос текстом или голосом. После этого нажми «Далее».",
+            reply_markup=flow_keyboard(True),
         )
-        if step + 1 >= len(questions):
-            await finish_flow(update, context, user)
-            return
-        await ask_current_question(update, user, questions)
         return
     step = int(user.get("active_step") or 0)
+    payload = store.payload(user)
+    answers = payload.setdefault("answers", {})
+    if step >= len(questions):
+        await finish_flow(update, context, user)
+        return
+    answer = str(answers.get(questions[step].key) or "").strip()
+    check = await check_question_answer(questions[step], answer)
+    if not check["ok"]:
+        await reply(
+            update,
+            "Пока не перехожу дальше.\n\n"
+            f"Не хватает: {esc(check['missing'])}\n\n"
+            "Дополни ответ текстом или голосом, потом снова нажми «Далее».",
+            reply_markup=flow_keyboard(True),
+        )
+        return
     user = store.update_user(user["telegram_user_id"], active_step=step + 1, state=None)
     if step + 1 >= len(questions):
         await finish_flow(update, context, user)
@@ -2249,6 +2254,66 @@ def append_answer_text(existing: str, text: str) -> str:
     if not clean_text:
         return clean_existing
     return f"{clean_existing}\n\n{clean_text}"
+
+
+async def check_question_answer(question: Question, answer: str) -> dict[str, Any]:
+    answer = answer.strip()
+    if not answer:
+        return {"ok": False, "missing": "ответ пока пустой"}
+    if _openai is None:
+        return {"ok": True, "missing": ""}
+
+    prompt = (
+        "Проверь, отвечает ли пользователь по существу на вопрос текущего форумного сценария.\n"
+        "Не оценивай качество глубоко, только наличие ответа. Будь мягким, но не пропускай пустые, "
+        "случайные или явно нерелевантные ответы.\n\n"
+        "Для вопроса про оценку текущего месяца, оценку прошлого месяца и изменения ответ считается полученным, "
+        "если есть хотя бы осмысленная оценка/сравнение и описание изменения; если нет одной части, укажи её.\n\n"
+        f"Вопрос:\n{question.prompt}\n\n"
+        f"Ответ пользователя:\n{answer[:4000]}\n\n"
+        'Верни только JSON: {"answered": true/false, "missing": "коротко чего не хватает"}'
+    )
+
+    def _call() -> str:
+        response = _openai.responses.create(
+            model=ANSWER_CHECK_MODEL,
+            input=prompt,
+            max_output_tokens=140,
+            text={"verbosity": "low"},
+        )
+        return extract_response_text(response)
+
+    try:
+        raw = await asyncio.to_thread(_call)
+        parsed = parse_answer_check_json(raw)
+        if parsed is not None:
+            return parsed
+    except Exception as exc:
+        log.warning("answer check failed question=%s error=%s", question.key, exc)
+    return {"ok": True, "missing": ""}
+
+
+def parse_answer_check_json(raw: str) -> dict[str, Any] | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end >= start:
+        text = text[start : end + 1]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    raw_answered = data.get("answered")
+    if isinstance(raw_answered, bool):
+        answered = raw_answered
+    else:
+        answered = str(raw_answered).strip().casefold() in {"true", "1", "yes", "да"}
+    missing = str(data.get("missing") or "").strip()
+    if not answered and not missing:
+        missing = "нужно ответить на сам вопрос"
+    return {"ok": answered, "missing": missing}
 
 
 def build_update_markdown(
