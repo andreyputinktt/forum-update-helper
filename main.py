@@ -742,6 +742,10 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def onboarding_finished_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Подготовить апдейт", callback_data="menu:update")]])
+
+
 def info_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -1596,9 +1600,8 @@ async def handle_onboarding_diary_reminder(
     value: str,
 ) -> None:
     updated = apply_diary_reminder_choice(user, value, finish_onboarding=True)
-    await reply(update, onboarding_finished_text(updated), reply_markup=MAIN_KEYBOARD)
+    await reply(update, onboarding_finished_text(updated), reply_markup=onboarding_finished_keyboard())
     await notify_admin_new_user(context, updated)
-    await show_profile_cabinet(update, updated)
 
 
 async def handle_diary_reminder_choice(update: Update, user: dict[str, Any], value: str) -> None:

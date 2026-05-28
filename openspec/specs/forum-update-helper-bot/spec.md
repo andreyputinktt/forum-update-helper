@@ -23,8 +23,9 @@ forum dates SHALL be formatted as `DD.MM.YYYY`.
 
 #### Scenario: User completes onboarding
 - **WHEN** a new user sends `/start` and answers or skips all onboarding prompts
-- **THEN** the bot stores the profile and shows the main Telegram menu
+- **THEN** the bot stores the profile and shows a single `Подготовить апдейт` action
 - **AND** the bot does not automatically send the full bot information text after the final onboarding step
+- **AND** the bot does not automatically open the personal cabinet after the final onboarding step
 
 #### Scenario: User configures diary during onboarding
 - **WHEN** the user reaches the final onboarding step

@@ -185,6 +185,13 @@ def test_diary_reminder_keyboard_has_onboarding_choices():
     ]
 
 
+def test_onboarding_finished_keyboard_has_single_prepare_action():
+    buttons = [button for row in bot.onboarding_finished_keyboard().inline_keyboard for button in row]
+
+    assert [button.text for button in buttons] == ["Подготовить апдейт"]
+    assert [button.callback_data for button in buttons] == ["menu:update"]
+
+
 def test_main_menu_uses_information_submenu():
     main_buttons = [button.text for row in bot.MAIN_KEYBOARD.keyboard for button in row]
     inline_callbacks = [
