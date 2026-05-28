@@ -4,12 +4,15 @@
 TBD - created by archiving change add-forum-update-helper-bot. Update Purpose after archive.
 ## Requirements
 ### Requirement: Onboarding profile
-The bot SHALL onboard each new user by collecting or defaulting business club,
-full name, forum group name, methodology, report recipient username, file
-retention preference, and the next forum date before exposing the main
-preparation workflow. Every onboarding step except methodology SHALL provide a
-Telegram-native skip action. The methodology step SHALL require an explicit
-choice. The bot SHALL send reports to the report recipient only when that
+The bot SHALL onboard each new user by first asking for the forum format
+methodology, then offering an AI-agent handoff choice, then collecting or
+defaulting full name, business club, forum group name, report recipient username,
+file retention preference, and the next forum date before exposing the main
+preparation workflow. Every onboarding step except methodology and AI-agent
+handoff SHALL provide a Telegram-native skip action. The methodology step SHALL
+require an explicit choice. The AI-agent handoff step SHALL offer either a full
+Markdown standard/instruction file for an external AI agent or continuing inside
+the bot. The bot SHALL send reports to the report recipient only when that
 Telegram username belongs to a user who has already started the bot.
 
 #### Scenario: User completes onboarding
@@ -30,6 +33,11 @@ Telegram username belongs to a user who has already started the bot.
 - **WHEN** the user chooses `Классическая (YPO)` or `С личной стратегией (X-Competence)`
 - **THEN** the selected methodology is stored and used for update preparation
 
+#### Scenario: User chooses AI-agent handoff
+- **WHEN** the user chooses to get an AI-agent Markdown file during onboarding
+- **THEN** the bot sends one `.md` file containing forum standards, methodology data, question lists, and instructions for an AI agent to conduct the full update
+- **AND** onboarding continues to the full-name step
+
 #### Scenario: User tries to skip methodology
 - **WHEN** the user reaches the methodology step
 - **THEN** the bot SHALL NOT provide a skip action for this step
@@ -43,7 +51,9 @@ The bot SHALL provide persistent and inline Telegram buttons for core actions:
 prepare update, set next forum date, run health check, personal cabinet, diary
 mode, diary prompt editing, information submenu, and delete my data. The
 information submenu SHALL contain bot info, build your own bot, find
-psychologist, find mentor, and contact author actions.
+psychologist, find mentor, and contact author actions. Bot descriptions SHALL
+state that the bot is compatible with AI agents and can export key data as
+Markdown files.
 
 #### Scenario: User opens menu
 - **WHEN** an onboarded user sends `/menu`

@@ -87,7 +87,9 @@ METHODOLOGY_CALLBACKS = {
     "strategy": METHODOLOGY_STRATEGY,
 }
 DEFAULT_METHODOLOGY = METHODOLOGY_CLASSIC
-ONBOARDING_TOTAL_STEPS = 7
+ONBOARDING_TOTAL_STEPS = 8
+AI_AGENT_MD_CHOICE = "Получить MD-файл для ИИ"
+AI_AGENT_BOT_CHOICE = "Продолжить внутри бота"
 FORUM_GUIDE_DIR = BASE_DIR / "docs" / "forum-guide"
 COMMON_GUIDE_PATH = FORUM_GUIDE_DIR / "forum-common-guide.md"
 CLASSIC_GUIDE_PATH = FORUM_GUIDE_DIR / "classic-update.md"
@@ -794,6 +796,15 @@ def methodology_keyboard(prefix: str = "methodology") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def ai_agent_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(AI_AGENT_MD_CHOICE, callback_data="ai_agent:md")],
+            [InlineKeyboardButton(AI_AGENT_BOT_CHOICE, callback_data="ai_agent:bot")],
+        ]
+    )
+
+
 def keep_files_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
     keep_is_current = user.get("keep_files") == 1
     delete_is_current = user.get("keep_files") == 0
@@ -897,20 +908,22 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
         "вне города.\n\n"
         "Ещё я могу помочь вести дневник, чтобы апдейт получился глубже, "
         "а жизнь — более осознанной, насыщенной и особенной.\n\n"
-        "Можно отвечать текстом или голосом. Голос я транскрибирую и покажу текст."
+        "Бот совместим с ИИ-агентами: материалы и апдейты можно выгружать "
+        "в MD-файлах. Можно отвечать текстом или голосом. Голос я транскрибирую "
+        "и покажу текст."
     )
     await reply(update, text)
     store.update_user(
         user["telegram_user_id"],
-        state="onboarding:business_club",
+        state="onboarding:methodology",
         active_flow=None,
         active_step=0,
         flow_payload="{}",
     )
     await reply(
         update,
-        f"<b>Шаг 1/{ONBOARDING_TOTAL_STEPS}</b>\nВыбери бизнес-клуб.",
-        reply_markup=business_club_keyboard(user=user),
+        f"<b>Шаг 1/{ONBOARDING_TOTAL_STEPS}</b>\nВыбери формат форума.",
+        reply_markup=methodology_keyboard(),
     )
 
 
@@ -959,12 +972,15 @@ async def send_about(update: Update) -> None:
         "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
         "• проводить весь апдейт вопрос за вопросом с кнопкой «Далее» и счётчиком;\n"
         "• выгружать сохранённые апдейты в формате .md, чтобы их было удобно дать ИИ;\n"
+        "• выгружать единый MD-файл стандарта форума с инструкцией для ИИ-агента;\n"
         "• отвечать на вопросы по сохранённым материалам форума;\n"
         "• принимать голосовые ответы и показывать транскрипт;\n"
         "• работать в режиме дневника и давать обратную связь по твоему prompt;\n"
         "• на следующее утро после форума спрашивать здоровье группы;\n"
         "• раз в три месяца напоминать о личной стратегической сессии в отеле;\n"
         "• удалить твои данные с сервера по кнопке.\n\n"
+        "Бот совместим с ИИ-агентами: все ключевые выгрузки можно получить "
+        "как Markdown-файлы и передать во внешний AI-workflow.\n\n"
         f'<a href="{REPO_URL}">Репозиторий</a> · '
         f'<a href="{BUILD_BOT_DOC_URL}">Сделать собственный бот</a>',
         reply_markup=info_inline_keyboard(),
@@ -1059,6 +1075,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         methodology = methodology_from_callback(data.split(":", 1)[1])
         await handle_onboarding_text(update, context, methodology or "")
+    elif data.startswith("ai_agent:"):
+        if user.get("state") != "onboarding:ai_agent":
+            await reply(update, "Эта кнопка уже неактуальна. Продолжаем текущий шаг.")
+            return
+        choice = AI_AGENT_MD_CHOICE if data.endswith(":md") else AI_AGENT_BOT_CHOICE
+        await handle_onboarding_text(update, context, choice)
     elif data.startswith("keep:"):
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
@@ -1240,53 +1262,76 @@ async def handle_onboarding_text(
     text: str,
 ) -> None:
     user = store.ensure_user(update)
-    state = user.get("state") or "onboarding:business_club"
-
-    if state == "onboarding:business_club":
-        club = text.strip()
-        if club not in BUSINESS_CLUBS:
-            club = club[:80]
-        store.update_user(user["telegram_user_id"], business_club=club, state="onboarding:full_name")
-        await reply(
-            update,
-            f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
-            reply_markup=skip_keyboard("full_name", user),
-        )
-        return
-
-    if state == "onboarding:full_name":
-        user = store.update_user(user["telegram_user_id"], full_name=text[:160], state="onboarding:forum_group")
-        await reply(
-            update,
-            f"<b>Шаг 3/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
-            reply_markup=skip_keyboard("forum_group", user),
-        )
-        return
-
-    if state == "onboarding:forum_group":
-        user = store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:methodology")
-        await reply(
-            update,
-            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Выбери методику подготовки апдейта.",
-            reply_markup=methodology_keyboard(),
-        )
-        return
+    state = user.get("state") or "onboarding:methodology"
 
     if state == "onboarding:methodology":
         methodology = normalize_methodology(text)
         if methodology is None:
             await reply(
                 update,
-                "Методику нужно выбрать, этот шаг нельзя пропустить.\n\n"
+                "Формат форума нужно выбрать, этот шаг нельзя пропустить.\n\n"
                 "Выбери один из двух вариантов:",
                 reply_markup=methodology_keyboard(),
             )
             return
-        store.update_user(user["telegram_user_id"], methodology=methodology, state="onboarding:community_chat")
+        user = store.update_user(user["telegram_user_id"], methodology=methodology, state="onboarding:ai_agent")
         await reply(
             update,
-            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Как хочешь работать с ИИ-агентом?\n\n"
+            f"• <b>{AI_AGENT_MD_CHOICE}</b> — я отправлю единый Markdown-файл со стандартом форума, "
+            "методологией и инструкцией для ИИ, который сможет провести тебя по апдейту.\n"
+            f"• <b>{AI_AGENT_BOT_CHOICE}</b> — продолжим настройку и будем заполнять апдейт здесь.",
+            reply_markup=ai_agent_keyboard(),
+        )
+        return
+
+    if state == "onboarding:ai_agent":
+        wants_md = "md" in text.casefold() or "файл" in text.casefold() or "ии" in text.casefold()
+        continues_in_bot = "бот" in text.casefold() or "продолж" in text.casefold()
+        if not wants_md and not continues_in_bot:
+            await reply(
+                update,
+                "Выбери один из вариантов: получить MD-файл для ИИ или продолжить внутри бота.",
+                reply_markup=ai_agent_keyboard(),
+            )
+            return
+        if wants_md:
+            await send_ai_forum_standard_file(update, user)
+        user = store.update_user(user["telegram_user_id"], state="onboarding:full_name")
+        await reply(
+            update,
+            f"<b>Шаг 3/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
+            reply_markup=skip_keyboard("full_name", user),
+        )
+        return
+
+    if state == "onboarding:full_name":
+        user = store.update_user(user["telegram_user_id"], full_name=text[:160], state="onboarding:business_club")
+        await reply(
+            update,
+            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\nВыбери бизнес-клуб.",
+            reply_markup=business_club_keyboard(user=user),
+        )
+        return
+
+    if state == "onboarding:business_club":
+        club = text.strip()
+        if club not in BUSINESS_CLUBS:
+            club = club[:80]
+        user = store.update_user(user["telegram_user_id"], business_club=club, state="onboarding:forum_group")
+        await reply(
+            update,
+            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
+            reply_markup=skip_keyboard("forum_group", user),
+        )
+        return
+
+    if state == "onboarding:forum_group":
+        store.update_user(user["telegram_user_id"], forum_group=text[:160], state="onboarding:community_chat")
+        await reply(
+            update,
+            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Кому отправлять статистику о здоровье форум-группы?\n\n"
             "Пришли Telegram username пользователя, например <code>@utandr</code>. "
             "Бот сможет отправить ему отчёт, только если этот пользователь уже запускал бота.",
@@ -1306,7 +1351,7 @@ async def handle_onboarding_text(
         user = store.update_user(user["telegram_user_id"], community_chat=recipient, state="onboarding:keep_files")
         await reply(
             update,
-            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n"
             "Сохранять апдейты полезно, чтобы потом видеть личную динамику и выгружать .md для ИИ.\n\n"
             "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
@@ -1323,9 +1368,9 @@ async def handle_onboarding_text(
         )
         await reply(
             update,
-            f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 8/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Когда следующий форум? Напиши дату: например, <code>23.06.2026</code> "
-            "или <code>2026-06-23</code>.",
+            "<code>2026-06-23</code> или коротко <code>2.06</code>.",
             reply_markup=skip_keyboard("next_forum_date", user),
         )
         return
@@ -1384,18 +1429,18 @@ async def handle_onboarding_skip(
     if field == "methodology":
         await reply(
             update,
-            "Методику нужно выбрать, этот шаг нельзя пропустить.",
+            "Формат форума нужно выбрать, этот шаг нельзя пропустить.",
             reply_markup=methodology_keyboard(),
         )
         return
 
     if field == "business_club":
-        user = store.update_user(user["telegram_user_id"], business_club="", state="onboarding:full_name")
+        user = store.update_user(user["telegram_user_id"], business_club="", state="onboarding:forum_group")
         await reply(
             update,
             "Ок, очистил бизнес-клуб.\n\n"
-            f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\nНапиши Фамилию Имя.",
-            reply_markup=skip_keyboard("full_name", user),
+            f"<b>Шаг 5/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
+            reply_markup=skip_keyboard("forum_group", user),
         )
         return
 
@@ -1403,24 +1448,26 @@ async def handle_onboarding_skip(
         user = store.update_user(
             user["telegram_user_id"],
             full_name="",
-            state="onboarding:forum_group",
+            state="onboarding:business_club",
         )
         await reply(
             update,
             "Ок, очистил Фамилию Имя.\n\n"
-            f"<b>Шаг 3/{ONBOARDING_TOTAL_STEPS}</b>\nКак называется твоя форум-группа?",
-            reply_markup=skip_keyboard("forum_group", user),
+            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\nВыбери бизнес-клуб.",
+            reply_markup=business_club_keyboard(user=user),
         )
         return
 
     if field == "forum_group":
-        user = store.update_user(user["telegram_user_id"], forum_group="", state="onboarding:methodology")
+        user = store.update_user(user["telegram_user_id"], forum_group="", state="onboarding:community_chat")
         await reply(
             update,
             "Ок, очистил форум-группу.\n\n"
-            f"<b>Шаг 4/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Выбери методику подготовки апдейта.",
-            reply_markup=methodology_keyboard(),
+            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Кому отправлять статистику о здоровье форум-группы?\n\n"
+            "Пришли Telegram username пользователя, например <code>@utandr</code>. "
+            "Бот сможет отправить ему отчёт, только если этот пользователь уже запускал бота.",
+            reply_markup=skip_keyboard("community_chat", user),
         )
         return
 
@@ -1429,7 +1476,7 @@ async def handle_onboarding_skip(
         await reply(
             update,
             "Ок, отчёты о здоровье пока будут оставаться в личном чате.\n\n"
-            f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Сохранять файлы апдейтов и загруженные документы на сервере или удалять после обработки?\n"
             "Сохранять апдейты полезно, чтобы потом видеть личную динамику и выгружать .md для ИИ.\n\n"
             "Голосовые и audio я не сохраняю никогда — удаляю сразу после транскрибации.",
@@ -1442,8 +1489,8 @@ async def handle_onboarding_skip(
         await reply(
             update,
             "Ок, по умолчанию буду удалять файлы после обработки.\n\n"
-            f"<b>Шаг 7/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Когда следующий форум?",
+            f"<b>Шаг 8/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Когда следующий форум? Можно написать <code>23.06.2026</code> или коротко <code>2.06</code>.",
             reply_markup=skip_keyboard("next_forum_date", user),
         )
         return
@@ -2080,6 +2127,87 @@ def build_update_markdown(
     if reflection:
         lines.extend(["## Короткая менторская сводка", "", reflection.strip(), ""])
     return "\n".join(lines).strip() + "\n"
+
+
+def question_list_markdown(title: str, questions: list[Question]) -> list[str]:
+    lines = [f"## {title}", ""]
+    current_section = ""
+    for index, question in enumerate(questions, start=1):
+        if question.section != current_section:
+            current_section = question.section
+            lines.extend([f"### {current_section}", ""])
+        lines.append(f"{index}. {question.prompt}")
+    lines.append("")
+    return lines
+
+
+def build_ai_forum_standard_markdown(user: dict[str, Any]) -> str:
+    methodology = methodology_for_user(user)
+    selected_questions = update_questions_for_user(user)
+    guide_context = load_forum_guide_context(None, max_chars=60000)
+    lines = [
+        "# Стандарт форума и инструкция для ИИ-агента",
+        "",
+        f"- Выбранный формат: {methodology}",
+        f"- Сформировано: {datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "## Назначение файла",
+        "",
+        "Этот Markdown-файл можно передать ИИ-агенту, чтобы он провёл пользователя по подготовке форумного апдейта целиком. "
+        "Агент должен опираться на правила форума, выбранную методику и список вопросов ниже.",
+        "",
+        "## Инструкция для ИИ-агента",
+        "",
+        "1. Работай на русском языке, коротко и бережно.",
+        "2. Сначала уточни ФИО, бизнес-клуб, название форум-группы и дату следующего форума, если пользователь хочет включить это в итоговый файл.",
+        "3. Объясни базовые правила форума: говорить только из личного опыта, не давать советов, не анализировать других, держать конфиденциальность.",
+        "4. Проводи пользователя по вопросам выбранного формата строго по одному вопросу за раз.",
+        "5. После каждого ответа фиксируй его в структуре Markdown и показывай прогресс в формате `заполнено N/TOTAL`.",
+        "6. Если пользователь просит пропустить вопрос, оставь в ответе пустое значение `_Нет ответа_` и переходи дальше.",
+        "7. Если пользователь просит вернуться назад, покажи предыдущий вопрос и дай заменить ответ.",
+        "8. Помогай формулировать личный опыт, чувства и главный запрос, но не придумывай факты за пользователя.",
+        "9. При оценке апдейта проверяй: личный опыт, конкретику, чувства, глубину 5%, отсутствие советов и ясность вопроса к форуму.",
+        "10. В конце выдай один Markdown-файл форумного апдейта с секциями выбранного формата и короткой сводкой.",
+        "",
+        "## Выбранная последовательность вопросов",
+        "",
+    ]
+    lines.extend(question_list_markdown(methodology, selected_questions))
+    lines.extend(question_list_markdown("Классическая методика (YPO)", CLASSIC_UPDATE_QUESTIONS))
+    lines.extend(question_list_markdown("С личной стратегией (X-Competence)", UPDATE_QUESTIONS))
+    lines.extend(
+        [
+            "## Справочник и методологические материалы",
+            "",
+            guide_context.strip() or "_Материалы справочника не найдены._",
+            "",
+        ]
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
+async def send_ai_forum_standard_file(update: Update, user: dict[str, Any]) -> None:
+    if not update.effective_message or not update.effective_chat:
+        return
+    content = build_ai_forum_standard_markdown(user)
+    filename = f"forum-standard-for-ai-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
+            fh.write(content)
+            temp_path = Path(fh.name)
+        with temp_path.open("rb") as fh:
+            await spaced_bot_send(
+                update.effective_chat.id,
+                lambda: update.effective_message.reply_document(
+                    document=fh,
+                    filename=filename,
+                    caption="MD-файл для ИИ-агента: стандарт форума, методология и алгоритм заполнения апдейта.",
+                ),
+            )
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
 
 
 async def maybe_reflect_update(

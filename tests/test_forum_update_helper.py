@@ -68,6 +68,13 @@ def test_methodology_keyboard_has_no_skip_button():
     assert all(len(value.encode("utf-8")) <= 64 for value in callback_data)
 
 
+def test_ai_agent_keyboard_offers_md_or_bot_flow():
+    labels = [button.text for row in bot.ai_agent_keyboard().inline_keyboard for button in row]
+
+    assert labels == ["Получить MD-файл для ИИ", "Продолжить внутри бота"]
+    assert bot.ONBOARDING_TOTAL_STEPS == 8
+
+
 def test_main_menu_uses_information_submenu():
     main_buttons = [button.text for row in bot.MAIN_KEYBOARD.keyboard for button in row]
     inline_callbacks = [
@@ -176,6 +183,16 @@ def test_forum_guide_context_loads_materials():
 
     assert "Классическая методика" in context
     assert "Форум — это" in context
+
+
+def test_ai_forum_standard_markdown_contains_agent_instruction():
+    text = bot.build_ai_forum_standard_markdown({"methodology": "С личной стратегией (X-Competence)"})
+
+    assert "# Стандарт форума и инструкция для ИИ-агента" in text
+    assert "## Инструкция для ИИ-агента" in text
+    assert "Классическая методика (YPO)" in text
+    assert "С личной стратегией (X-Competence)" in text
+    assert "заполнено N/TOTAL" in text
 
 
 def test_store_delete_user_removes_records(tmp_path):
