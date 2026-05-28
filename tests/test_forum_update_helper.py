@@ -22,8 +22,16 @@ def test_parse_forum_date_short_day_month_current_or_next_year():
 def test_update_question_counter_message():
     message = bot.question_message(bot.UPDATE_QUESTIONS[3], 3, len(bot.UPDATE_QUESTIONS))
 
-    assert "Заполнено: <b>3/" in message
+    assert "Заполнено:" not in message
     assert "Вопрос 4/" in message
+
+
+def test_large_update_questions_use_readable_multiline_format():
+    message = bot.question_message(bot.UPDATE_QUESTIONS[0], 0, len(bot.UPDATE_QUESTIONS))
+
+    assert "\n- оценку этого месяца" in message
+    assert "\n- оценку предыдущего месяца" in message
+    assert "\n\n" in message
 
 
 def test_rating_questions_warn_about_neutral_seven():
@@ -36,6 +44,19 @@ def test_x_competence_rating_question_merges_previous_month_and_change():
     assert "оценку предыдущего месяца" in bot.UPDATE_QUESTIONS[0].prompt
     assert "что изменилось" in bot.UPDATE_QUESTIONS[0].prompt
     assert not any(question.key.startswith("changed_") for question in bot.UPDATE_QUESTIONS)
+
+
+def test_x_competence_questions_are_condensed_by_sphere():
+    keys = [question.key for question in bot.UPDATE_QUESTIONS]
+
+    assert len(bot.UPDATE_QUESTIONS) == 21
+    assert not any(key.startswith("delta_") for key in keys)
+    assert not any(key.startswith("past_action_") for key in keys)
+    assert not any(key.startswith("past_failed_") for key in keys)
+    assert not any(key.startswith("annual_goal_") for key in keys)
+    assert "impact_Моё дело" in keys
+    assert "retrospective_Моё дело" in keys
+    assert "next_period_Моё дело" in keys
 
 
 def test_append_answer_text_preserves_multiple_messages():

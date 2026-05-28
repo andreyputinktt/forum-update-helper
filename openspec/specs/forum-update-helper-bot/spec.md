@@ -108,11 +108,15 @@ text as a questionnaire answer. The bot SHALL allow multiple text or voice
 messages for a single questionnaire step and SHALL NOT advance to the next step
 until the user presses "Далее". For X-Competence, the first question in each
 sphere SHALL ask for the current month rating, previous month rating, and what
-changed in one combined prompt.
+changed in one combined prompt. Closely related X-Competence prompts SHALL be
+merged when one answer can naturally cover them, including impact/dynamics,
+retrospective learnings, next-period planning, and meeting notes. Question
+messages SHALL show the current question number and SHALL NOT show a separate
+`Заполнено: X/Y` line.
 
 #### Scenario: User advances through questions
 - **WHEN** the user answers a questionnaire step
-- **THEN** the bot shows a filled counter such as `3/50` and waits for the
+- **THEN** the bot confirms the answer and waits for the
   user to press "Далее" before asking the next question
 - **AND** the flow controls include "Назад" and "Далее"
 - **AND** after "Далее" the bot checks with a cheap model whether the question was answered before advancing
