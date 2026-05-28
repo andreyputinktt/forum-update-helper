@@ -146,7 +146,10 @@ def x_competence_rating_prompt(sphere: str) -> str:
         "Укажи:\n"
         "- оценку этого месяца: 1-10;\n"
         "- оценку предыдущего месяца: 1-10;\n"
-        "- что изменилось.\n\n"
+        "- что изменилось;\n"
+        "- что дало наибольший вклад в эту оценку;\n"
+        "- если оценка упала: что произошло;\n"
+        "- если выросла: за счёт чего.\n\n"
         f"{RATING_7_WARNING}"
     )
 
@@ -162,14 +165,6 @@ for sphere in SPHERES:
             Question(
                 f"rating_{sphere}",
                 x_competence_rating_prompt(sphere),
-                "Часть 1. Оценка трёх сфер",
-            ),
-            Question(
-                f"impact_{sphere}",
-                f"{sphere}: что повлияло на оценку и динамику?\n\n"
-                "- Что дало наибольший вклад в эту оценку?\n"
-                "- Если оценка упала: что произошло?\n"
-                "- Если выросла: за счёт чего?",
                 "Часть 1. Оценка трёх сфер",
             ),
         ]
@@ -382,6 +377,27 @@ def clip(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def format_transcript_text(transcript: str, sentence_group: int = 2) -> str:
+    text = re.sub(r"\s+", " ", str(transcript or "")).strip()
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=[.!?…])\s+", text)
+    sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+    if len(sentences) <= 1:
+        chunks = [text[i : i + 420].strip() for i in range(0, len(text), 420)]
+    else:
+        chunks = [
+            " ".join(sentences[i : i + sentence_group]).strip()
+            for i in range(0, len(sentences), sentence_group)
+        ]
+    return "\n\n".join(chunk for chunk in chunks if chunk)
+
+
+def transcript_message(transcript: str) -> str:
+    formatted = format_transcript_text(transcript)
+    return f"<b>Транскрипт</b>\n\n<blockquote>{esc(formatted)}</blockquote>"
 
 
 def mark_user_activity(chat_id: int | str) -> None:
@@ -2631,7 +2647,7 @@ async def handle_voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TY
     finally:
         audio_path.unlink(missing_ok=True)
 
-    await reply(update, f"<b>Транскрипт</b>\n{esc(transcript)}")
+    await reply(update, transcript_message(transcript))
     fresh_user = store.get_user(user["telegram_user_id"]) or user
     await route_text(update, context, fresh_user, transcript)
 

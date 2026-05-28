@@ -43,20 +43,32 @@ def test_x_competence_rating_question_merges_previous_month_and_change():
     assert "оценку этого месяца" in bot.UPDATE_QUESTIONS[0].prompt
     assert "оценку предыдущего месяца" in bot.UPDATE_QUESTIONS[0].prompt
     assert "что изменилось" in bot.UPDATE_QUESTIONS[0].prompt
+    assert "что дало наибольший вклад" in bot.UPDATE_QUESTIONS[0].prompt
     assert not any(question.key.startswith("changed_") for question in bot.UPDATE_QUESTIONS)
 
 
 def test_x_competence_questions_are_condensed_by_sphere():
     keys = [question.key for question in bot.UPDATE_QUESTIONS]
 
-    assert len(bot.UPDATE_QUESTIONS) == 21
+    assert len(bot.UPDATE_QUESTIONS) == 18
+    assert not any(key.startswith("impact_") for key in keys)
     assert not any(key.startswith("delta_") for key in keys)
     assert not any(key.startswith("past_action_") for key in keys)
     assert not any(key.startswith("past_failed_") for key in keys)
     assert not any(key.startswith("annual_goal_") for key in keys)
-    assert "impact_Моё дело" in keys
     assert "retrospective_Моё дело" in keys
     assert "next_period_Моё дело" in keys
+
+
+def test_transcript_message_is_formatted_for_telegram():
+    text = bot.transcript_message(
+        "Первое предложение. Второе предложение. Третье предложение с <опасным> текстом."
+    )
+
+    assert text.startswith("<b>Транскрипт</b>\n\n<blockquote>")
+    assert "Первое предложение. Второе предложение." in text
+    assert "\n\nТретье предложение" in text
+    assert "&lt;опасным&gt;" in text
 
 
 def test_append_answer_text_preserves_multiple_messages():

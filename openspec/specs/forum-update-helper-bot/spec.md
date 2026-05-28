@@ -88,10 +88,11 @@ between bot messages.
 
 ### Requirement: Voice and audio transcription
 The bot SHALL accept voice and audio messages, transcribe them through the
-configured transcription provider, echo the transcript to the user, and pass the
-transcribed text to the active conversation flow. The bot SHALL delete downloaded
-audio immediately after transcription or failed transcription, regardless of the
-user's file-retention setting.
+configured transcription provider, immediately echo the transcript to the user
+as a formatted Telegram message, and pass the transcribed text to the active
+conversation flow. The bot SHALL delete downloaded audio immediately after
+transcription or failed transcription, regardless of the user's file-retention
+setting.
 
 #### Scenario: User answers by voice
 - **WHEN** a user sends a Telegram voice message while a flow is active
@@ -107,9 +108,10 @@ SHALL hide the persistent lower menu and SHALL NOT treat stale lower-menu button
 text as a questionnaire answer. The bot SHALL allow multiple text or voice
 messages for a single questionnaire step and SHALL NOT advance to the next step
 until the user presses "Далее". For X-Competence, the first question in each
-sphere SHALL ask for the current month rating, previous month rating, and what
-changed in one combined prompt. Closely related X-Competence prompts SHALL be
-merged when one answer can naturally cover them, including impact/dynamics,
+sphere SHALL ask for the current month rating, previous month rating, what
+changed, what contributed most, and the reason for upward or downward movement
+in one combined prompt. Closely related X-Competence prompts SHALL be merged
+when one answer can naturally cover them, including impact/dynamics,
 retrospective learnings, next-period planning, and meeting notes. Question
 messages SHALL show the current question number and SHALL NOT show a separate
 `Заполнено: X/Y` line.
