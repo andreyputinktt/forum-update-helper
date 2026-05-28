@@ -7,12 +7,14 @@ TBD - created by archiving change add-forum-update-helper-bot. Update Purpose af
 The bot SHALL onboard each new user by first asking for the forum format
 methodology, then offering an AI-agent handoff choice, then collecting or
 defaulting full name, business club, forum group name, report recipient username,
-file retention preference, and the next forum date before exposing the main
-preparation workflow. Every onboarding step except methodology and AI-agent
-handoff SHALL provide a Telegram-native skip action. The methodology step SHALL
+file retention preference, the next forum date, and diary mode/reminder
+preference before exposing the main preparation workflow. Every onboarding step
+except methodology, AI-agent handoff, and diary reminder preference SHALL provide
+a Telegram-native skip action. The methodology step SHALL
 require an explicit choice. The AI-agent handoff step SHALL offer either a full
-Markdown standard/instruction file for an external AI agent or continuing inside
-the bot. The first onboarding message SHALL include a "Подробно о боте" link.
+Markdown standard/instruction file for an external ChatGPT workflow or continuing inside
+the Telegram bot. The AI-agent handoff labels SHALL distinguish a complex
+file-only path from a simple in-bot path. The first onboarding message SHALL include a "Подробно о боте" link.
 The bot SHALL explain that the report recipient is usually a community manager
 contact, if one exists, and SHALL offer an explicit "Никому не отправлять"
 action. The bot SHALL send reports to the report recipient only when that
@@ -23,6 +25,11 @@ forum dates SHALL be formatted as `DD.MM.YYYY`.
 - **WHEN** a new user sends `/start` and answers or skips all onboarding prompts
 - **THEN** the bot stores the profile and shows the main Telegram menu
 - **AND** the bot does not automatically send the full bot information text after the final onboarding step
+
+#### Scenario: User configures diary during onboarding
+- **WHEN** the user reaches the final onboarding step
+- **THEN** the bot offers to leave diary mode off, enable a same-day 21:00 reminder, or enable a next-day 08:00 reminder
+- **AND** choosing a reminder enables diary mode with the default feedback prompt
 
 #### Scenario: Existing user restarts onboarding
 - **WHEN** an existing user sends `/start`

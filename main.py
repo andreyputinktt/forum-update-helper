@@ -88,9 +88,14 @@ METHODOLOGY_CALLBACKS = {
     "strategy": METHODOLOGY_STRATEGY,
 }
 DEFAULT_METHODOLOGY = METHODOLOGY_CLASSIC
-ONBOARDING_TOTAL_STEPS = 8
-AI_AGENT_MD_CHOICE = "Получить MD-файл для ИИ"
-AI_AGENT_BOT_CHOICE = "Продолжить внутри бота"
+ONBOARDING_TOTAL_STEPS = 9
+AI_AGENT_MD_CHOICE = "Сложно: загрузить только файл"
+AI_AGENT_BOT_CHOICE = "Просто: продолжить работу"
+DEFAULT_DIARY_PROMPT = "С точки зрения лидерства, Алмазного огранщика и моих паттернов."
+DIARY_REMINDER_CHOICES = {
+    "21": ("21:00", "в 21:00 этого дня"),
+    "08": ("08:00", "в 08:00 следующего дня"),
+}
 FORUM_GUIDE_DIR = BASE_DIR / "docs" / "forum-guide"
 COMMON_GUIDE_PATH = FORUM_GUIDE_DIR / "forum-common-guide.md"
 CLASSIC_GUIDE_PATH = FORUM_GUIDE_DIR / "classic-update.md"
@@ -545,6 +550,7 @@ class Store:
                 next_forum_date TEXT,
                 diary_enabled INTEGER DEFAULT 0,
                 diary_feedback_prompt TEXT,
+                diary_reminder_time TEXT,
                 last_offsite_reminder_date TEXT,
                 admin_notified INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -568,6 +574,7 @@ class Store:
         self._ensure_column("users", "methodology", "TEXT DEFAULT 'Классическая (YPO)'")
         self._ensure_column("users", "diary_enabled", "INTEGER DEFAULT 0")
         self._ensure_column("users", "diary_feedback_prompt", "TEXT")
+        self._ensure_column("users", "diary_reminder_time", "TEXT")
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -819,6 +826,17 @@ def ai_agent_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(AI_AGENT_BOT_CHOICE, callback_data="ai_agent:bot")],
         ]
     )
+
+
+def diary_reminder_keyboard(prefix: str = "diary_reminder") -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton("Не включать дневник", callback_data=f"{prefix}:off")],
+        [InlineKeyboardButton("Включить: 21:00 этого дня", callback_data=f"{prefix}:21")],
+        [InlineKeyboardButton("Включить: 08:00 следующего дня", callback_data=f"{prefix}:08")],
+    ]
+    if prefix != "diary_reminder":
+        buttons.append([InlineKeyboardButton("Назад", callback_data="diary:mode")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def keep_files_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
@@ -1100,6 +1118,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         choice = AI_AGENT_MD_CHOICE if data.endswith(":md") else AI_AGENT_BOT_CHOICE
         await handle_onboarding_text(update, context, choice)
+    elif data.startswith("diary_reminder:"):
+        value = data.split(":", 1)[1]
+        if user.get("state") == "onboarding:diary_reminder":
+            await handle_onboarding_diary_reminder(update, context, user, value)
+        else:
+            await handle_diary_reminder_choice(update, user, value)
     elif data.startswith("keep:"):
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
@@ -1159,8 +1183,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "diary:enable":
         await start_diary_prompt_setup(update, user, enable=True)
     elif data == "diary:disable":
-        store.update_user(user["telegram_user_id"], diary_enabled=0, state=None)
+        store.update_user(user["telegram_user_id"], diary_enabled=0, diary_reminder_time=None, state=None)
         await reply(update, "Режим дневника выключен.", reply_markup=MAIN_KEYBOARD)
+    elif data == "diary:reminder":
+        await reply(
+            update,
+            "Когда напоминать о дневнике?",
+            reply_markup=diary_reminder_keyboard(prefix="diary_reminder"),
+        )
     elif data == "delete:ask":
         await ask_delete_data(update)
     elif data == "delete:confirm":
@@ -1293,21 +1323,24 @@ async def handle_onboarding_text(
         await reply(
             update,
             f"<b>Шаг 2/{ONBOARDING_TOTAL_STEPS}</b>\n"
-            "Как хочешь работать с ИИ-агентом?\n\n"
+            "Как хочешь работать с Telegram-ботом?\n\n"
             f"• <b>{AI_AGENT_MD_CHOICE}</b> — я отправлю единый Markdown-файл со стандартом форума, "
-            "методологией и инструкцией для ИИ, который сможет провести тебя по апдейту.\n"
-            f"• <b>{AI_AGENT_BOT_CHOICE}</b> — продолжим настройку и будем заполнять апдейт здесь.",
+            "методологией и инструкцией. Дальше ты переходишь в свой ChatGPT и анализируешь диалог там. "
+            "Плюс: дальнейшая личная информация не проходит через этого бота.\n"
+            f"• <b>{AI_AGENT_BOT_CHOICE}</b> — заполняем всё прямо здесь. Плюсы: бот напомнит о здоровье "
+            "форум-группы, проведёт опросы, примет голосовые ответы и сможет вести дневник.",
             reply_markup=ai_agent_keyboard(),
         )
         return
 
     if state == "onboarding:ai_agent":
-        wants_md = "md" in text.casefold() or "файл" in text.casefold() or "ии" in text.casefold()
-        continues_in_bot = "бот" in text.casefold() or "продолж" in text.casefold()
+        folded = text.casefold()
+        wants_md = "сложно" in folded or "md" in folded or "файл" in folded or "chatgpt" in folded
+        continues_in_bot = "просто" in folded or "бот" in folded or "продолж" in folded
         if not wants_md and not continues_in_bot:
             await reply(
                 update,
-                "Выбери один из вариантов: получить MD-файл для ИИ или продолжить внутри бота.",
+                "Выбери один из вариантов: сложный режим с MD-файлом или простой режим внутри Telegram-бота.",
                 reply_markup=ai_agent_keyboard(),
             )
             return
@@ -1399,14 +1432,35 @@ async def handle_onboarding_text(
         user = store.update_user(
             user["telegram_user_id"],
             next_forum_date=forum_date.isoformat(),
-            state=None,
+            state="onboarding:diary_reminder",
         )
         await reply(
             update,
-            f"Профиль готов. Следующий форум: <b>{forum_date.strftime('%d.%m.%Y')}</b>.",
-            reply_markup=MAIN_KEYBOARD,
+            f"<b>Шаг 9/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            f"Следующий форум: <b>{forum_date.strftime('%d.%m.%Y')}</b>.\n\n"
+            "Включить режим дневника? Если включить, я буду напоминать о дневниковой записи "
+            "и принимать текст или аудио. Свободные сообщения вне сценариев буду читать как дневник.",
+            reply_markup=diary_reminder_keyboard(),
         )
-        await notify_admin_new_user(context, user)
+        return
+
+    if state == "onboarding:diary_reminder":
+        folded = text.casefold()
+        if "21" in folded or "вечер" in folded:
+            await handle_onboarding_diary_reminder(update, context, user, "21")
+            return
+        if "8" in folded or "утр" in folded:
+            await handle_onboarding_diary_reminder(update, context, user, "08")
+            return
+        if "не" in folded or "выкл" in folded or "нет" in folded:
+            await handle_onboarding_diary_reminder(update, context, user, "off")
+            return
+        await reply(
+            update,
+            "Выбери, включать ли дневник и когда напоминать.",
+            reply_markup=diary_reminder_keyboard(),
+        )
+        return
 
 
 async def handle_onboarding_keep(
@@ -1516,16 +1570,71 @@ async def handle_onboarding_skip(
         user = store.update_user(
             user["telegram_user_id"],
             next_forum_date=forum_date.isoformat(),
-            state=None,
+            state="onboarding:diary_reminder",
         )
         await reply(
             update,
             f"Ок, поставил временную дату форума: <b>{forum_date.strftime('%d.%m.%Y')}</b>. "
-            "Её можно поменять в личном кабинете.",
+            "Её можно поменять в личном кабинете.\n\n"
+            f"<b>Шаг 9/{ONBOARDING_TOTAL_STEPS}</b>\n"
+            "Включить режим дневника? Если включить, я буду напоминать о дневниковой записи "
+            "и принимать текст или аудио.",
+            reply_markup=diary_reminder_keyboard(),
+        )
+        return
+
+
+async def handle_onboarding_diary_reminder(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    value: str,
+) -> None:
+    updated = apply_diary_reminder_choice(user, value, finish_onboarding=True)
+    await reply(update, onboarding_finished_text(updated), reply_markup=MAIN_KEYBOARD)
+    await notify_admin_new_user(context, updated)
+    await show_profile_cabinet(update, updated)
+
+
+async def handle_diary_reminder_choice(update: Update, user: dict[str, Any], value: str) -> None:
+    updated = apply_diary_reminder_choice(user, value)
+    if updated.get("diary_enabled"):
+        await reply(
+            update,
+            f"Напоминание дневника настроено: <b>{esc(updated.get('diary_reminder_time') or '')}</b>.",
             reply_markup=MAIN_KEYBOARD,
         )
-        await notify_admin_new_user(context, user)
-        await show_profile_cabinet(update, user)
+    else:
+        await reply(update, "Напоминания дневника выключены.", reply_markup=MAIN_KEYBOARD)
+
+
+def apply_diary_reminder_choice(
+    user: dict[str, Any],
+    value: str,
+    finish_onboarding: bool = False,
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {"state": None}
+    if value == "off":
+        fields.update(diary_enabled=0, diary_reminder_time=None)
+    else:
+        reminder_time = DIARY_REMINDER_CHOICES.get(value, DIARY_REMINDER_CHOICES["21"])[0]
+        fields.update(
+            diary_enabled=1,
+            diary_feedback_prompt=(user.get("diary_feedback_prompt") or DEFAULT_DIARY_PROMPT),
+            diary_reminder_time=reminder_time,
+        )
+    if not finish_onboarding:
+        fields["state"] = None
+    return store.update_user(user["telegram_user_id"], **fields)
+
+
+def onboarding_finished_text(user: dict[str, Any]) -> str:
+    forum_date = format_forum_date(user.get("next_forum_date")) or "не указана"
+    if user.get("diary_enabled"):
+        diary = f"Дневник включён, напоминание {user.get('diary_reminder_time') or 'без времени'}."
+    else:
+        diary = "Дневник выключен."
+    return f"Профиль готов. Следующий форум: <b>{esc(forum_date)}</b>.\n{esc(diary)}"
 
 
 async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> None:
@@ -1573,6 +1682,7 @@ def profile_cabinet_text(user: dict[str, Any]) -> str:
     )
     diary = "включён" if user.get("diary_enabled") else "выключен"
     forum_date = format_forum_date(user.get("next_forum_date")) or "не указана"
+    diary_reminder = user.get("diary_reminder_time") or "не настроено"
     recipient_text = report_recipient or "не указан — отчёты остаются в личном чате"
     return (
         "<b>Личный кабинет</b>\n\n"
@@ -1584,6 +1694,7 @@ def profile_cabinet_text(user: dict[str, Any]) -> str:
         f"Файлы: <b>{esc(keep_files)}</b>\n"
         f"Следующий форум: <b>{esc(forum_date)}</b>\n"
         f"Режим дневника: <b>{esc(diary)}</b>\n\n"
+        f"Напоминание дневника: <b>{esc(diary_reminder)}</b>\n\n"
         "Все поля можно изменить здесь."
     )
 
@@ -1839,16 +1950,19 @@ async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
                 )
             ],
             [InlineKeyboardButton("Поменять prompt обратной связи", callback_data="diary:prompt")],
+            [InlineKeyboardButton("Настроить напоминание", callback_data="diary:reminder")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
     status = "включён" if enabled else "выключен"
     prompt_text = prompt or "пока не задан"
+    reminder_text = user.get("diary_reminder_time") or "не настроено"
     await reply(
         update,
         f"<b>Режим дневника: {status}</b>\n\n"
         "Когда режим включён, свободные сообщения вне апдейта и health check "
         "я воспринимаю как дневниковые записи и даю обратную связь по твоему prompt.\n\n"
+        f"<b>Напоминание</b>\n{esc(reminder_text)}\n\n"
         f"<b>Текущий prompt</b>\n{esc(prompt_text)}",
         reply_markup=keyboard,
     )
@@ -2602,9 +2716,39 @@ async def maybe_send_offsite_reminder(
     store.update_user(user["telegram_user_id"], last_offsite_reminder_date=today.isoformat())
 
 
+async def diary_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    slot = str(context.job.data)
+    reminder_time = DIARY_REMINDER_CHOICES.get(slot, DIARY_REMINDER_CHOICES["21"])[0]
+    today = datetime.now(TZ).date()
+    for user in store.complete_users():
+        if not user.get("diary_enabled") or user.get("diary_reminder_time") != reminder_time:
+            continue
+        reminder_type = f"diary_{slot}"
+        reminder_key = today.isoformat()
+        if store.reminder_sent(user["telegram_user_id"], reminder_type, reminder_key):
+            continue
+        if slot == "08":
+            text = (
+                "<b>Дневник</b>\n\n"
+                "Доброе утро. Если вчера был важный материал для апдейта, надиктуй или напиши дневниковую запись. "
+                "Я сохраню её как дневник и дам обратную связь по твоему prompt."
+            )
+        else:
+            text = (
+                "<b>Дневник</b>\n\n"
+                "Вечерняя отметка. Если сегодня было что-то важное для апдейта или жизни, "
+                "надиктуй или напиши дневниковую запись. Я дам обратную связь по твоему prompt."
+            )
+        ok = await safe_send(context, int(user["chat_id"]), text)
+        if ok:
+            store.mark_reminder(user["telegram_user_id"], reminder_type, reminder_key)
+
+
 async def post_init(application: Application) -> None:
     maintenance_time = parse_time(DAILY_MAINTENANCE_TIME)
     application.job_queue.run_daily(daily_maintenance, time=maintenance_time, name="daily-maintenance")
+    application.job_queue.run_daily(diary_reminder_job, time=parse_time("21:00"), data="21", name="diary-reminder-21")
+    application.job_queue.run_daily(diary_reminder_job, time=parse_time("08:00"), data="08", name="diary-reminder-08")
     application.job_queue.run_once(daily_maintenance, when=10, name="startup-maintenance")
     log.info("ForumUpdateHelperBot started")
 

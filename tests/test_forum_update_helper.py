@@ -111,8 +111,18 @@ def test_methodology_keyboard_has_no_skip_button():
 def test_ai_agent_keyboard_offers_md_or_bot_flow():
     labels = [button.text for row in bot.ai_agent_keyboard().inline_keyboard for button in row]
 
-    assert labels == ["Получить MD-файл для ИИ", "Продолжить внутри бота"]
-    assert bot.ONBOARDING_TOTAL_STEPS == 8
+    assert labels == ["Сложно: загрузить только файл", "Просто: продолжить работу"]
+    assert bot.ONBOARDING_TOTAL_STEPS == 9
+
+
+def test_diary_reminder_keyboard_has_onboarding_choices():
+    labels = [button.text for row in bot.diary_reminder_keyboard().inline_keyboard for button in row]
+
+    assert labels == [
+        "Не включать дневник",
+        "Включить: 21:00 этого дня",
+        "Включить: 08:00 следующего дня",
+    ]
 
 
 def test_main_menu_uses_information_submenu():
@@ -285,6 +295,28 @@ def test_store_adds_diary_columns(tmp_path):
 
     assert "diary_enabled" in columns
     assert "diary_feedback_prompt" in columns
+    assert "diary_reminder_time" in columns
+
+
+def test_apply_diary_reminder_choice_sets_default_prompt(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (123, 456, now, now),
+    )
+    test_store.conn.commit()
+
+    updated = bot.apply_diary_reminder_choice(test_store.get_user(123), "21")
+
+    assert updated["diary_enabled"] == 1
+    assert updated["diary_reminder_time"] == "21:00"
+    assert updated["diary_feedback_prompt"] == bot.DEFAULT_DIARY_PROMPT
 
 
 def test_store_resolves_user_by_username(tmp_path):
@@ -336,6 +368,7 @@ def test_profile_cabinet_text_marks_empty_report_recipient():
             "keep_files": 0,
             "next_forum_date": "2026-06-26",
             "diary_enabled": 0,
+            "diary_reminder_time": None,
         }
     )
 
