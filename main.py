@@ -42,6 +42,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 UPDATES_DIR = DATA_DIR / "updates"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+BOT_USERNAME = os.getenv("BOT_USERNAME", "ForumUpdateHelperBot").removeprefix("@")
 ADMIN_CHAT_ID = int(
     os.getenv("ADMIN_CHAT_ID")
     or os.getenv("ASSISTANTS_TELEGRAM_CHAT_ID")
@@ -116,6 +117,7 @@ AUTHOR_TEXT = (
     "Можно писать, если хотите связаться с автором, предложить улучшение или "
     "стать соавтором. Бот развёрнут на сервере компании kt.team."
 )
+ABOUT_DEEPLINK = f"https://t.me/{BOT_USERNAME}?start=about"
 
 
 @dataclass(frozen=True)
@@ -442,6 +444,19 @@ def default_forum_date() -> date:
     return datetime.now(TZ).date() + timedelta(days=30)
 
 
+def format_forum_date(value: Any) -> str:
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return date.fromisoformat(text).strftime("%d.%m.%Y")
+    except ValueError:
+        parsed = parse_forum_date(text)
+        return parsed.strftime("%d.%m.%Y") if parsed else text
+
+
 def normalize_username(value: str) -> str:
     return value.strip().removeprefix("@").casefold()
 
@@ -755,7 +770,7 @@ def onboarding_current_value(user: dict[str, Any], field: str) -> str:
             return ""
         return "Сохранять" if user.get("keep_files") else "Удалять"
     if field == "next_forum_date":
-        return str(user.get("next_forum_date") or "")
+        return format_forum_date(user.get("next_forum_date"))
     mapping = {
         "business_club": "business_club",
         "full_name": "full_name",
@@ -770,7 +785,8 @@ def skip_keyboard(field: str, user: dict[str, Any] | None = None) -> InlineKeybo
     current = onboarding_current_value(user or {}, field)
     if current:
         buttons.append([InlineKeyboardButton(current, callback_data=f"onboard:{field}:keep")])
-    buttons.append([InlineKeyboardButton("Пропустить", callback_data=f"skip:{field}")])
+    skip_label = "Никому не отправлять" if field == "community_chat" else "Пропустить"
+    buttons.append([InlineKeyboardButton(skip_label, callback_data=f"skip:{field}")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -895,6 +911,9 @@ async def cmd_getid(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "start")
+    if context.args and context.args[0].casefold() == "about":
+        await send_about(update)
+        return
     await start_onboarding(update, context, user)
 
 
@@ -910,7 +929,7 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
         "а жизнь — более осознанной, насыщенной и особенной.\n\n"
         "Бот совместим с ИИ-агентами: материалы и апдейты можно выгружать "
         "в MD-файлах. Можно отвечать текстом или голосом. Голос я транскрибирую "
-        "и покажу текст."
+        f"и покажу текст.\n\n<a href=\"{ABOUT_DEEPLINK}\">Подробно о боте</a>"
     )
     await reply(update, text)
     store.update_user(
@@ -1333,6 +1352,7 @@ async def handle_onboarding_text(
             update,
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Кому отправлять статистику о здоровье форум-группы?\n\n"
+            "Обычно это контакт вашего комьюнити-менеджера, если он есть. "
             "Пришли Telegram username пользователя, например <code>@utandr</code>. "
             "Бот сможет отправить ему отчёт, только если этот пользователь уже запускал бота.",
             reply_markup=skip_keyboard("community_chat", user),
@@ -1344,7 +1364,7 @@ async def handle_onboarding_text(
         if not recipient:
             await reply(
                 update,
-                "Пришли Telegram username в формате <code>@username</code> или нажми «Пропустить».",
+                "Пришли Telegram username в формате <code>@username</code> или нажми «Никому не отправлять».",
                 reply_markup=skip_keyboard("community_chat"),
             )
             return
@@ -1391,7 +1411,6 @@ async def handle_onboarding_text(
             reply_markup=MAIN_KEYBOARD,
         )
         await notify_admin_new_user(context, user)
-        await send_about(update)
 
 
 async def handle_onboarding_keep(
@@ -1465,6 +1484,7 @@ async def handle_onboarding_skip(
             "Ок, очистил форум-группу.\n\n"
             f"<b>Шаг 6/{ONBOARDING_TOTAL_STEPS}</b>\n"
             "Кому отправлять статистику о здоровье форум-группы?\n\n"
+            "Обычно это контакт вашего комьюнити-менеджера, если он есть. "
             "Пришли Telegram username пользователя, например <code>@utandr</code>. "
             "Бот сможет отправить ему отчёт, только если этот пользователь уже запускал бота.",
             reply_markup=skip_keyboard("community_chat", user),
@@ -1556,7 +1576,7 @@ def profile_cabinet_text(user: dict[str, Any]) -> str:
         else "удалять после обработки"
     )
     diary = "включён" if user.get("diary_enabled") else "выключен"
-    forum_date = user.get("next_forum_date") or "не указана"
+    forum_date = format_forum_date(user.get("next_forum_date")) or "не указана"
     recipient_text = report_recipient or "не указан — отчёты остаются в личном чате"
     return (
         "<b>Личный кабинет</b>\n\n"
@@ -2107,7 +2127,7 @@ def build_update_markdown(
     reflection: str = "",
     questions: list[Question] | None = None,
 ) -> str:
-    forum_date = user.get("next_forum_date") or "не указана"
+    forum_date = format_forum_date(user.get("next_forum_date")) or "не указана"
     methodology = methodology_for_user(user)
     selected_questions = questions or update_questions_for_user(user)
     lines = [

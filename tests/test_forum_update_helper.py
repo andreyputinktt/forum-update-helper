@@ -111,6 +111,23 @@ def test_onboarding_existing_value_buttons():
     assert "Пропустить" in labels
 
 
+def test_onboarding_formats_existing_forum_date_button():
+    labels = [
+        button.text
+        for row in bot.skip_keyboard("next_forum_date", {"next_forum_date": "2026-06-26"}).inline_keyboard
+        for button in row
+    ]
+
+    assert "26.06.2026" in labels
+    assert "2026-06-26" not in labels
+
+
+def test_community_report_skip_button_is_explicit():
+    labels = [button.text for row in bot.skip_keyboard("community_chat").inline_keyboard for button in row]
+
+    assert labels == ["Никому не отправлять"]
+
+
 def test_profile_complete_allows_empty_optional_identity_fields():
     user = {
         "business_club": "",
@@ -287,3 +304,5 @@ def test_profile_cabinet_text_marks_empty_report_recipient():
     assert "Классическая (YPO)" in text
     assert "Получатель отчётов" in text
     assert "отчёты остаются в личном чате" in text
+    assert "Следующий форум: <b>26.06.2026</b>" in text
+    assert "2026-06-26" not in text
