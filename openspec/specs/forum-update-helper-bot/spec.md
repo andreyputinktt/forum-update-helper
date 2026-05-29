@@ -23,7 +23,7 @@ forum dates SHALL be formatted as `DD.MM.YYYY`.
 
 #### Scenario: User completes onboarding
 - **WHEN** a new user sends `/start` and answers or skips all onboarding prompts
-- **THEN** the bot stores the profile and shows a single `Подготовить апдейт` action
+- **THEN** the bot stores the profile and shows a single `Апдейты` action
 - **AND** the bot does not automatically send the full bot information text after the final onboarding step
 - **AND** the bot does not automatically open the personal cabinet after the final onboarding step
 
@@ -60,9 +60,15 @@ forum dates SHALL be formatted as `DD.MM.YYYY`.
 - **THEN** the bot sends the admin only the user's full name and business club
 
 ### Requirement: Telegram-native menu
-The bot SHALL provide persistent and inline Telegram buttons for core actions:
-prepare update, set next forum date, run health check, personal cabinet, diary
-mode, diary prompt editing, information submenu, and delete my data. The
+The bot SHALL provide a compact persistent menu organized around four top-level
+sections: updates, forum group, diary, and personal cabinet. The updates section
+SHALL contain actions to start a new update, edit the previous update with a
+date-aware label when available, list saved updates, download the latest update,
+and chat about update dynamics. The forum-group section SHALL contain health
+check, next forum date, forum guide, and forum-group information actions. The
+diary section SHALL contain a new diary entry action plus diary settings,
+prompt, reminder, and enable/disable actions. The personal cabinet SHALL contain
+profile editing, information submenu access, and delete-my-data action. The
 information submenu SHALL contain bot info, build your own bot, find
 psychologist, find mentor, and contact author actions. Bot descriptions SHALL
 state that the bot is compatible with AI agents and can export key data as

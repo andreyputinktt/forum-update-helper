@@ -252,11 +252,11 @@ def test_diary_reminder_keyboard_has_onboarding_choices():
 def test_onboarding_finished_keyboard_has_single_prepare_action():
     buttons = [button for row in bot.onboarding_finished_keyboard().inline_keyboard for button in row]
 
-    assert [button.text for button in buttons] == ["Подготовить апдейт"]
-    assert [button.callback_data for button in buttons] == ["menu:update"]
+    assert [button.text for button in buttons] == ["Апдейты"]
+    assert [button.callback_data for button in buttons] == ["updates:menu"]
 
 
-def test_main_menu_uses_information_submenu():
+def test_main_menu_uses_high_level_submenus():
     main_buttons = [button.text for row in bot.MAIN_KEYBOARD.keyboard for button in row]
     inline_callbacks = [
         button.callback_data
@@ -265,10 +265,9 @@ def test_main_menu_uses_information_submenu():
         if button.callback_data
     ]
 
-    assert "Информация" in main_buttons
-    assert "О боте" not in main_buttons
-    assert "Ищу психолога" not in main_buttons
-    assert "menu:info" in inline_callbacks
+    assert main_buttons == ["Апдейты", "Моя форум-группа", "Дневник", "Личный кабинет"]
+    assert inline_callbacks == ["updates:menu", "forum_group:menu", "diary:menu", "profile:show"]
+    assert "Удалить мои данные" not in main_buttons
 
 
 def test_information_submenu_contains_info_actions():
@@ -332,6 +331,11 @@ def test_keep_files_keyboard_has_no_skip_or_duplicate_current_button():
 
 def test_submenus_include_back_buttons():
     profile_labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
+    updates_labels = [
+        button.text for row in bot.updates_menu_keyboard({"last_update_at": "2026-04-26T10:00:00+03:00"}).inline_keyboard for button in row
+    ]
+    forum_group_labels = [button.text for row in bot.forum_group_menu_keyboard().inline_keyboard for button in row]
+    diary_labels = [button.text for row in bot.diary_menu_keyboard({"diary_enabled": 0}).inline_keyboard for button in row]
     guide_labels = [button.text for row in bot.guide_keyboard().inline_keyboard for button in row]
     edit_labels = [
         button.text
@@ -340,6 +344,9 @@ def test_submenus_include_back_buttons():
     ]
 
     assert "Назад" in profile_labels
+    assert "Назад" in updates_labels
+    assert "Назад" in forum_group_labels
+    assert "Назад" in diary_labels
     assert "Назад" in guide_labels
     assert "Назад" in edit_labels
 
@@ -360,10 +367,21 @@ def test_update_start_keyboard_offers_new_or_edit():
     assert labels == ["Новый апдейт", "Изменить предыдущий"]
 
 
-def test_profile_has_download_files_button():
-    labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
+def test_updates_menu_has_update_actions_and_profile_has_delete():
+    update_labels = [
+        button.text
+        for row in bot.updates_menu_keyboard({"last_update_at": "2026-04-26T10:00:00+03:00"}).inline_keyboard
+        for button in row
+    ]
+    profile_labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
 
-    assert "Скачать апдейт" in labels
+    assert "Начать новый апдейт" in update_labels
+    assert "Редактировать апдейт от 26.04.2026" in update_labels
+    assert "Список моих апдейтов" in update_labels
+    assert "Скачать апдейт" in update_labels
+    assert "Пообщаться по динамике апдейтов" in update_labels
+    assert "Удалить мои данные" in profile_labels
+    assert "Скачать апдейт" not in profile_labels
 
 
 def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):

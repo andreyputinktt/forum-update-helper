@@ -103,11 +103,9 @@ X_COMPETENCE_GUIDE_PATH = FORUM_GUIDE_DIR / "x-competence-update.md"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["Подготовить апдейт", "Дата следующего форума"],
-        ["Здоровье форум-группы", "Справочник форума"],
-        ["Личный кабинет", "Режим дневника"],
-        ["Промпт дневника", "Информация"],
-        ["Удалить мои данные"],
+        ["Апдейты"],
+        ["Моя форум-группа", "Дневник"],
+        ["Личный кабинет"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -765,27 +763,18 @@ store = Store(DB_PATH)
 def main_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("Апдейты", callback_data="updates:menu")],
             [
-                InlineKeyboardButton("Подготовить апдейт", callback_data="menu:update"),
-                InlineKeyboardButton("Дата форума", callback_data="menu:date"),
-            ],
-            [
-                InlineKeyboardButton("Health check", callback_data="menu:health"),
-                InlineKeyboardButton("Справочник", callback_data="guide:open"),
+                InlineKeyboardButton("Моя форум-группа", callback_data="forum_group:menu"),
+                InlineKeyboardButton("Дневник", callback_data="diary:menu"),
             ],
             [InlineKeyboardButton("Личный кабинет", callback_data="profile:show")],
-            [
-                InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
-                InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
-            ],
-            [InlineKeyboardButton("Информация", callback_data="menu:info")],
-            [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
         ]
     )
 
 
 def onboarding_finished_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Подготовить апдейт", callback_data="menu:update")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Апдейты", callback_data="updates:menu")]])
 
 
 def info_inline_keyboard() -> InlineKeyboardMarkup:
@@ -805,8 +794,74 @@ def info_inline_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def latest_update_label(user: dict[str, Any]) -> str:
+    value = str(user.get("last_update_at") or "").strip()
+    if value:
+        try:
+            updated_at = datetime.fromisoformat(value)
+            return f"Редактировать апдейт от {updated_at.strftime('%d.%m.%Y')}"
+        except ValueError:
+            pass
+    files = saved_update_files(user)
+    if files:
+        return f"Редактировать апдейт от {datetime.fromtimestamp(files[0].stat().st_mtime, TZ).strftime('%d.%m.%Y')}"
+    return "Редактировать предыдущий апдейт"
+
+
+def updates_menu_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Начать новый апдейт", callback_data="update:new")],
+            [InlineKeyboardButton(latest_update_label(user), callback_data="update:edit")],
+            [InlineKeyboardButton("Список моих апдейтов", callback_data="updates:list")],
+            [InlineKeyboardButton("Скачать апдейт", callback_data="profile:download_files")],
+            [InlineKeyboardButton("Пообщаться по динамике апдейтов", callback_data="updates:chat")],
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
+        ]
+    )
+
+
+def forum_group_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Здоровье форум-группы", callback_data="menu:health")],
+            [InlineKeyboardButton("Дата следующего форума", callback_data="menu:date")],
+            [InlineKeyboardButton("Справочник форума", callback_data="guide:open")],
+            [InlineKeyboardButton("О моей форум-группе", callback_data="forum_group:info")],
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
+        ]
+    )
+
+
+def diary_menu_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
+    enabled = bool(user.get("diary_enabled"))
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Новая запись в дневнике", callback_data="diary:new")],
+            [InlineKeyboardButton("Настройки дневника", callback_data="diary:mode")],
+            [InlineKeyboardButton("Prompt дневника", callback_data="diary:prompt")],
+            [InlineKeyboardButton("Напоминание дневника", callback_data="diary:reminder")],
+            [
+                InlineKeyboardButton(
+                    "Выключить дневник" if enabled else "Включить дневник",
+                    callback_data="diary:disable" if enabled else "diary:enable",
+                )
+            ],
+            [InlineKeyboardButton("Назад", callback_data="menu:root")],
+        ]
+    )
+
+
 def back_to_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="menu:root")]])
+
+
+def back_to_updates_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="updates:menu")]])
+
+
+def back_to_diary_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="diary:menu")]])
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
@@ -1024,10 +1079,10 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
 async def show_menu(update: Update) -> None:
     await reply(
         update,
-        "<b>Меню</b>\nВыбери действие. Частые кнопки также закреплены внизу чата.",
+        "<b>Меню</b>\nГлавная работа здесь — апдейты. Остальное собрано в подменю.",
         reply_markup=MAIN_KEYBOARD,
     )
-    await reply(update, "Быстрые действия:", reply_markup=main_inline_keyboard())
+    await reply(update, "Выбери раздел:", reply_markup=main_inline_keyboard())
 
 
 async def show_info_menu(update: Update) -> None:
@@ -1035,6 +1090,40 @@ async def show_info_menu(update: Update) -> None:
         update,
         "<b>Информация</b>\nВыбери, что нужно:",
         reply_markup=info_inline_keyboard(),
+    )
+
+
+async def show_updates_menu(update: Update, user: dict[str, Any]) -> None:
+    fresh = store.update_user(user["telegram_user_id"], state=None, active_flow=None)
+    await reply(
+        update,
+        "<b>Апдейты</b>\n\n"
+        "Здесь можно начать новый апдейт, вернуться к предыдущему, скачать Markdown "
+        "или обсудить динамику по уже сохранённым апдейтам.",
+        reply_markup=updates_menu_keyboard(fresh),
+    )
+
+
+async def show_forum_group_menu(update: Update, user: dict[str, Any]) -> None:
+    fresh = store.update_user(user["telegram_user_id"], state=None)
+    await reply(
+        update,
+        forum_group_info_text(fresh),
+        reply_markup=forum_group_menu_keyboard(),
+    )
+
+
+async def show_diary_menu(update: Update, user: dict[str, Any]) -> None:
+    fresh = store.update_user(user["telegram_user_id"], state=None)
+    status = "включён" if fresh.get("diary_enabled") else "выключен"
+    reminder = fresh.get("diary_reminder_time") or "не настроено"
+    await reply(
+        update,
+        "<b>Дневник</b>\n\n"
+        f"Статус: <b>{esc(status)}</b>\n"
+        f"Напоминание: <b>{esc(reminder)}</b>\n\n"
+        "Можно добавить новую запись, поменять prompt обратной связи или настроить напоминание.",
+        reply_markup=diary_menu_keyboard(fresh),
     )
 
 
@@ -1132,7 +1221,7 @@ async def cmd_profile(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_diary(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "diary")
-    await start_diary_prompt_setup(update, user, enable=True)
+    await show_diary_menu(update, user)
 
 
 async def cmd_stats(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1185,6 +1274,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
         await handle_onboarding_skip(update, context, data.split(":", 1)[1])
+    elif data == "updates:menu":
+        await show_updates_menu(update, user)
+    elif data == "updates:list":
+        await show_updates_list(update, user)
+    elif data == "updates:chat":
+        await start_updates_chat(update, user)
+    elif data == "forum_group:menu":
+        await show_forum_group_menu(update, user)
+    elif data == "forum_group:info":
+        await show_forum_group_menu(update, user)
+    elif data == "diary:menu":
+        await show_diary_menu(update, user)
+    elif data == "diary:new":
+        await start_diary_entry(update, user)
     elif data == "menu:update":
         await start_update_flow(update, user)
     elif data == "update:new":
@@ -1244,8 +1347,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "diary:enable":
         await start_diary_prompt_setup(update, user, enable=True)
     elif data == "diary:disable":
-        store.update_user(user["telegram_user_id"], diary_enabled=0, diary_reminder_time=None, state=None)
-        await reply(update, "Режим дневника выключен.", reply_markup=MAIN_KEYBOARD)
+        updated = store.update_user(user["telegram_user_id"], diary_enabled=0, diary_reminder_time=None, state=None)
+        await reply(update, "Режим дневника выключен.", reply_markup=diary_menu_keyboard(updated))
     elif data == "diary:reminder":
         await reply(
             update,
@@ -1257,7 +1360,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "delete:confirm":
         await delete_my_data(update, user)
     elif data == "delete:cancel":
-        await reply(update, "Ок, данные оставил.", reply_markup=MAIN_KEYBOARD)
+        await reply(update, "Ок, данные оставил.", reply_markup=profile_cabinet_keyboard())
     elif data == "flow:cancel":
         store.set_flow(user["telegram_user_id"], None)
         store.update_user(user["telegram_user_id"], state=None)
@@ -1287,10 +1390,18 @@ async def route_text(
 
     lower = text.casefold()
     shortcuts = {
+        "апдейты": lambda: show_updates_menu(update, user),
         "подготовить апдейт": lambda: start_update_flow(update, user),
+        "начать новый апдейт": lambda: begin_update_flow(update, user, edit_previous=False),
+        "редактировать апдейт": lambda: begin_update_flow(update, user, edit_previous=True),
+        "список моих апдейтов": lambda: show_updates_list(update, user),
+        "пообщаться по динамике апдейтов": lambda: start_updates_chat(update, user),
+        "моя форум-группа": lambda: show_forum_group_menu(update, user),
         "дата следующего форума": lambda: ask_next_forum_date(update, user),
         "здоровье форум-группы": lambda: start_health_flow(update, user),
         "справочник форума": lambda: show_forum_guide(update, user),
+        "дневник": lambda: show_diary_menu(update, user),
+        "новая запись в дневнике": lambda: start_diary_entry(update, user),
         "личный кабинет": lambda: show_profile_cabinet(update, user),
         "информация": lambda: show_info_menu(update),
         "о боте": lambda: send_about(update),
@@ -1339,8 +1450,17 @@ async def route_text(
         await answer_guide_question(update, context, user, text)
         return
 
+    if user.get("state") == "updates:chat":
+        await answer_updates_chat(update, context, user, text)
+        return
+
     if str(user.get("state") or "").startswith("profile:"):
         await handle_profile_edit_text(update, user, text)
+        return
+
+    if user.get("state") == "diary:entry":
+        fresh = store.update_user(user["telegram_user_id"], state=None)
+        await handle_diary_entry(update, context, fresh, text)
         return
 
     if user.get("active_flow") == "update":
@@ -1669,10 +1789,10 @@ async def handle_diary_reminder_choice(update: Update, user: dict[str, Any], val
         await reply(
             update,
             f"Напоминание дневника настроено: <b>{esc(updated.get('diary_reminder_time') or '')}</b>.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=diary_menu_keyboard(updated),
         )
     else:
-        await reply(update, "Напоминания дневника выключены.", reply_markup=MAIN_KEYBOARD)
+        await reply(update, "Напоминания дневника выключены.", reply_markup=diary_menu_keyboard(updated))
 
 
 def apply_diary_reminder_choice(
@@ -1766,6 +1886,20 @@ def profile_cabinet_text(user: dict[str, Any]) -> str:
     )
 
 
+def forum_group_info_text(user: dict[str, Any]) -> str:
+    report_recipient = (user.get("community_chat") or "").strip()
+    forum_date = format_forum_date(user.get("next_forum_date")) or "не указана"
+    recipient_text = report_recipient or "никому не отправлять"
+    return (
+        "<b>Моя форум-группа</b>\n\n"
+        f"Название: <b>{esc(user.get('forum_group') or 'не указано')}</b>\n"
+        f"Методика: <b>{esc(methodology_for_user(user))}</b>\n"
+        f"Следующий форум: <b>{esc(forum_date)}</b>\n"
+        f"Получатель health check: <b>{esc(recipient_text)}</b>\n\n"
+        "Здесь можно запустить health check, изменить дату форума или открыть справочник."
+    )
+
+
 def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -1782,11 +1916,8 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Файлы", callback_data="profile:edit:keep_files"),
                 InlineKeyboardButton("Дата форума", callback_data="profile:edit:next_forum_date"),
             ],
-            [
-                InlineKeyboardButton("Режим дневника", callback_data="diary:mode"),
-                InlineKeyboardButton("Промпт дневника", callback_data="diary:prompt"),
-            ],
-            [InlineKeyboardButton("Скачать апдейт", callback_data="profile:download_files")],
+            [InlineKeyboardButton("Информация", callback_data="menu:info")],
+            [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
@@ -1923,7 +2054,7 @@ async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
         await reply(
             update,
             "Сохранённых .md апдейтов пока нет. Сначала подготовь апдейт.",
-            reply_markup=profile_cabinet_keyboard(),
+            reply_markup=updates_menu_keyboard(user),
         )
         return
     if update.effective_message is None or update.effective_chat is None:
@@ -1938,6 +2069,114 @@ async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
                 caption="Форумный апдейт в .md — можно передать ИИ.",
             ),
         )
+
+
+def update_history_context(user: dict[str, Any], max_chars: int = 22000) -> str:
+    chunks: list[str] = []
+    latest = str(user.get("last_update_markdown") or "").strip()
+    if latest:
+        title = user.get("last_update_filename") or "последний апдейт"
+        chunks.append(f"# {title}\n\n{latest}")
+    for path in saved_update_files(user):
+        if sum(len(chunk) for chunk in chunks) >= max_chars:
+            break
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text and text not in latest:
+            chunks.append(f"# {path.name}\n\n{text}")
+    combined = "\n\n---\n\n".join(chunks)
+    return combined[:max_chars]
+
+
+async def show_updates_list(update: Update, user: dict[str, Any]) -> None:
+    files = saved_update_files(user)
+    lines = ["<b>Мои апдейты</b>"]
+    latest_at = format_forum_date(str(user.get("last_update_at") or "")[:10])
+    latest_filename = str(user.get("last_update_filename") or "").strip()
+    if latest_filename:
+        lines.append(f"• Последний: <b>{esc(latest_filename)}</b>{f' от {esc(latest_at)}' if latest_at else ''}")
+    for index, path in enumerate(files[:12], start=1):
+        modified = datetime.fromtimestamp(path.stat().st_mtime, TZ).strftime("%d.%m.%Y")
+        lines.append(f"{index}. {esc(path.name)} — {modified}")
+    if len(lines) == 1:
+        lines.append("\nПока нет сохранённых апдейтов. Начни новый апдейт, и он появится здесь.")
+    await reply(update, "\n".join(lines), reply_markup=updates_menu_keyboard(user))
+
+
+async def start_updates_chat(update: Update, user: dict[str, Any]) -> None:
+    context = update_history_context(user, max_chars=4000)
+    if not context.strip():
+        await reply(
+            update,
+            "Пока нет апдейтов, по которым можно обсудить динамику. Начни новый апдейт, и я смогу сравнивать изменения.",
+            reply_markup=updates_menu_keyboard(user),
+        )
+        return
+    store.update_user(user["telegram_user_id"], state="updates:chat", active_flow=None)
+    await reply(
+        update,
+        "<b>Разговор по динамике апдейтов</b>\n\n"
+        "Напиши вопрос: например, «что повторяется?», «где я застреваю?» "
+        "или «какая главная динамика по бизнесу за последние апдейты?»",
+        reply_markup=back_to_updates_keyboard(),
+    )
+
+
+async def answer_updates_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    question: str,
+) -> None:
+    fresh = store.update_user(user["telegram_user_id"], state="updates:chat", active_flow=None)
+    await reply(update, "Смотрю твои апдейты и динамику.")
+    answer = await generate_updates_answer(fresh, question)
+    await reply(
+        update,
+        f"{answer}\n\nМожно задать следующий вопрос по динамике или выйти назад.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="updates:menu")]]),
+    )
+
+
+async def generate_updates_answer(user: dict[str, Any], question: str) -> str:
+    updates_context = update_history_context(user)
+    if not updates_context:
+        return "Пока нет сохранённых апдейтов для анализа динамики."
+    if _openai is None:
+        return (
+            "OpenAI не настроен на сервере, поэтому сейчас не могу собрать динамический анализ. "
+            "Апдейты сохранены, их можно скачать в .md и посмотреть отдельно."
+        )
+    system = (
+        "Ты помогаешь участнику форум-группы анализировать динамику его апдейтов. "
+        "Опирайся только на предоставленные апдейты. Пиши бережно, конкретно и без диагнозов."
+    )
+    prompt = (
+        f"Апдейты пользователя:\n{updates_context}\n\n"
+        f"Вопрос пользователя:\n{question[:4000]}\n\n"
+        "Ответь кратко:\n"
+        "1. Что видно по динамике\n"
+        "2. Какие повторяющиеся паттерны или изменения заметны\n"
+        "3. Один полезный следующий вопрос для дневника или форума"
+    )
+
+    def _call() -> str:
+        response = _openai.responses.create(
+            model=OPENAI_MODEL,
+            instructions=system,
+            input=prompt,
+            max_output_tokens=900,
+            text={"verbosity": "low"},
+        )
+        return extract_response_text(response)
+
+    try:
+        return await asyncio.to_thread(_call)
+    except Exception as exc:
+        log.warning("updates answer failed user_id=%s error=%s", user.get("telegram_user_id"), exc)
+        return "Не смог ответить по апдейтам сейчас. Попробуй ещё раз позже."
 
 
 async def show_forum_guide(update: Update, user: dict[str, Any]) -> None:
@@ -2035,7 +2274,7 @@ async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
             ],
             [InlineKeyboardButton("Поменять prompt обратной связи", callback_data="diary:prompt")],
             [InlineKeyboardButton("Настроить напоминание", callback_data="diary:reminder")],
-            [InlineKeyboardButton("Назад", callback_data="menu:root")],
+            [InlineKeyboardButton("Назад", callback_data="diary:menu")],
         ]
     )
     status = "включён" if enabled else "выключен"
@@ -2052,6 +2291,22 @@ async def show_diary_mode_menu(update: Update, user: dict[str, Any]) -> None:
     )
 
 
+async def start_diary_entry(update: Update, user: dict[str, Any]) -> None:
+    fields: dict[str, Any] = {"state": "diary:entry", "active_flow": None}
+    if not user.get("diary_enabled"):
+        fields.update(
+            diary_enabled=1,
+            diary_feedback_prompt=(user.get("diary_feedback_prompt") or DEFAULT_DIARY_PROMPT),
+        )
+    store.update_user(user["telegram_user_id"], **fields)
+    await reply(
+        update,
+        "<b>Новая запись в дневнике</b>\n\n"
+        "Пришли запись текстом или голосом. Я дам обратную связь по твоему prompt дневника.",
+        reply_markup=back_to_diary_keyboard(),
+    )
+
+
 async def start_diary_prompt_setup(update: Update, user: dict[str, Any], enable: bool) -> None:
     store.update_user(user["telegram_user_id"], state="diary:prompt")
     verb = "включить" if enable else "изменить"
@@ -2062,7 +2317,7 @@ async def start_diary_prompt_setup(update: Update, user: dict[str, Any], enable:
         f"Например:\n\n"
         f"<i>С точки зрения лидерства, Алмазного огранщика и моих паттернов.</i>\n\n"
         f"После этого я {verb} режим дневника.",
-        reply_markup=cancel_keyboard(),
+        reply_markup=back_to_diary_keyboard(),
     )
 
 
@@ -2071,7 +2326,7 @@ async def save_diary_prompt(update: Update, user: dict[str, Any], text: str) -> 
     if not prompt:
         await reply(update, "Prompt пустой. Напиши, какую обратную связь давать на дневник.")
         return
-    store.update_user(
+    updated = store.update_user(
         user["telegram_user_id"],
         diary_enabled=1,
         diary_feedback_prompt=prompt,
@@ -2082,7 +2337,7 @@ async def save_diary_prompt(update: Update, user: dict[str, Any], text: str) -> 
         "<b>Режим дневника включён</b>\n\n"
         "Теперь свободные сообщения буду читать как дневник и давать обратную связь так:\n"
         f"{esc(prompt)}",
-        reply_markup=MAIN_KEYBOARD,
+        reply_markup=diary_menu_keyboard(updated),
     )
 
 
@@ -2099,7 +2354,7 @@ async def handle_diary_entry(
     store.log_interaction(user["telegram_user_id"], "diary_entry")
     await reply(update, "Принял как дневниковую запись. Дам обратную связь.")
     feedback = await generate_diary_feedback(user, text, prompt)
-    await reply(update, feedback or "Не смог собрать обратную связь сейчас. Запись принял.", reply_markup=MAIN_KEYBOARD)
+    await reply(update, feedback or "Не смог собрать обратную связь сейчас. Запись принял.", reply_markup=diary_menu_keyboard(user))
 
 
 async def generate_diary_feedback(user: dict[str, Any], entry: str, feedback_prompt: str) -> str:
@@ -2839,7 +3094,7 @@ async def maybe_send_forum_reminders(
                     chat_id,
                     "<b>Пора готовить форумный апдейт</b>\n\n"
                     "У тебя уже открыт другой сценарий. Закончи его или нажми /cancel, "
-                    "потом выбери «Подготовить апдейт».",
+                    "потом выбери «Апдейты».",
                 )
             store.mark_reminder(user["telegram_user_id"], reminder_type, value)
 
