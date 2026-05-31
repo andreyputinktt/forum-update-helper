@@ -445,7 +445,7 @@ def test_updates_menu_is_simple_and_profile_has_delete():
     assert "Доп. информация" not in profile_labels
 
 
-def test_updates_list_keyboard_has_dynamic_and_per_update_actions(tmp_path, monkeypatch):
+def test_updates_list_keyboard_has_only_dynamics_and_back(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "UPDATES_DIR", tmp_path)
     user = {"telegram_user_id": 123}
     user_dir = tmp_path / "123"
@@ -460,13 +460,23 @@ def test_updates_list_keyboard_has_dynamic_and_per_update_actions(tmp_path, monk
     labels = [button.text for button in buttons]
     callbacks = [button.callback_data for button in buttons]
 
-    assert "Динамика апдейтов" in labels
-    assert "Редактировать 1" in labels
-    assert ".md (ИИ) 1" in labels
-    assert ".html 1" in labels
-    assert "updates:edit:0" in callbacks
-    assert "updates:md:0" in callbacks
-    assert "updates:html:0" in callbacks
+    assert labels == ["Динамика апдейтов", "Назад"]
+    assert callbacks == ["updates:chat", "updates:menu"]
+
+
+def test_update_item_line_uses_deeplinks_for_actions():
+    line = bot.update_item_line(
+        1,
+        {"selector": "0", "filename": "forum-update.md", "date": "31.05.2026"},
+    )
+
+    assert "1. <b>31.05.2026</b> — forum-update.md" in line
+    assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_md_0"' in line
+    assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_html_0"' in line
+    assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_edit_0"' in line
+    assert "скачать .md" in line
+    assert "скачать .html" in line
+    assert "редактировать" in line
 
 
 def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):

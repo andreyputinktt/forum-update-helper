@@ -1097,11 +1097,37 @@ async def cmd_getid(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "start")
-    if context.args and context.args[0].casefold() == "about":
-        await send_about(update)
-        return
+    if context.args:
+        payload = context.args[0].casefold()
+        if payload == "about":
+            await send_about(update)
+            return
+        if await handle_start_payload(update, context, user, payload):
+            return
     await reply(update, "Обновил меню. Сейчас пройдём блок настроек.", reply_markup=MAIN_KEYBOARD)
     await start_onboarding(update, context, user)
+
+
+async def handle_start_payload(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    payload: str,
+) -> bool:
+    match = re.fullmatch(r"upd_(md|html|edit)_([a-z0-9_-]+)", payload)
+    if not match:
+        return False
+    action, selector = match.groups()
+    if action == "md":
+        await send_saved_update_files(update, user, source_selector=selector)
+        return True
+    if action == "html":
+        await send_readable_update_file(update, user, source_selector=selector)
+        return True
+    if not await require_profile_settings(update, context, user):
+        return True
+    await begin_update_flow(update, user, edit_previous=True, source_selector=selector)
+    return True
 
 
 async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> None:
@@ -2164,20 +2190,26 @@ def stored_update_items(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def updates_list_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
-    buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton("Динамика апдейтов", callback_data="updates:chat")]
-    ]
-    for index, item in enumerate(stored_update_items(user)[:10], start=1):
-        selector = item["selector"]
-        buttons.append(
-            [
-                InlineKeyboardButton(f"Редактировать {index}", callback_data=f"updates:edit:{selector}"),
-                InlineKeyboardButton(f".md (ИИ) {index}", callback_data=f"updates:md:{selector}"),
-                InlineKeyboardButton(f".html {index}", callback_data=f"updates:html:{selector}"),
-            ]
-        )
-    buttons.append([InlineKeyboardButton("Назад", callback_data="updates:menu")])
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Динамика апдейтов", callback_data="updates:chat")],
+            [InlineKeyboardButton("Назад", callback_data="updates:menu")],
+        ]
+    )
+
+
+def update_action_deeplink(action: str, selector: str) -> str:
+    return f"https://t.me/{BOT_USERNAME}?start=upd_{action}_{selector}"
+
+
+def update_item_line(index: int, item: dict[str, Any]) -> str:
+    selector = str(item["selector"])
+    return (
+        f"{index}. <b>{esc(item['date'])}</b> — {esc(item['filename'])}\n"
+        f'<a href="{update_action_deeplink("md", selector)}">скачать .md</a> · '
+        f'<a href="{update_action_deeplink("html", selector)}">скачать .html</a> · '
+        f'<a href="{update_action_deeplink("edit", selector)}">редактировать</a>'
+    )
 
 
 def looks_like_utf8_mojibake(text: str) -> bool:
@@ -2515,12 +2547,12 @@ async def show_updates_list(update: Update, user: dict[str, Any]) -> None:
     lines = [
         "<b>Мои апдейты</b>",
         "",
-        "Можно посмотреть динамику по всем апдейтам или выбрать конкретный апдейт: отредактировать, скачать .md для ИИ или .html для чтения.",
+        "Апдейты отсортированы от самого позднего к самому раннему.",
     ]
     if items:
         lines.append("")
         for index, item in enumerate(items[:10], start=1):
-            lines.append(f"{index}. <b>{esc(item['date'])}</b> — {esc(item['filename'])}")
+            lines.append(update_item_line(index, item))
     else:
         lines.append("\nПока нет сохранённых апдейтов. Начни новый апдейт, и он появится здесь.")
     await reply(update, "\n".join(lines), reply_markup=updates_list_keyboard(user))
