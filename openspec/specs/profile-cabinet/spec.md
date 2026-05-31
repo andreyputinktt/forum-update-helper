@@ -7,8 +7,9 @@ TBD - created by archiving change add-onboarding-skip-and-profile-cabinet. Updat
 The bot SHALL provide a Telegram-native personal cabinet showing the user's
 stored business club, full name, forum group, methodology, report recipient
 username, file retention preference, next forum date, and diary status.
-The personal cabinet SHALL provide access to information links and a delete-my-data
-action. Latest update download SHALL live in the updates section.
+The personal cabinet SHALL provide a delete-my-data action. Additional
+information links SHALL live in the top-level additional-information section.
+Latest update download SHALL live in the updates section.
 
 #### Scenario: User opens personal cabinet
 - **WHEN** an onboarded user chooses "Личный кабинет"

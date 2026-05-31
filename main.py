@@ -105,7 +105,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["Апдейты"],
         ["Моя форум-группа", "Дневник"],
-        ["Личный кабинет"],
+        ["Личный кабинет", "Доп. информация"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -768,7 +768,10 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Моя форум-группа", callback_data="forum_group:menu"),
                 InlineKeyboardButton("Дневник", callback_data="diary:menu"),
             ],
-            [InlineKeyboardButton("Личный кабинет", callback_data="profile:show")],
+            [
+                InlineKeyboardButton("Личный кабинет", callback_data="profile:show"),
+                InlineKeyboardButton("Доп. информация", callback_data="menu:info"),
+            ],
         ]
     )
 
@@ -824,8 +827,8 @@ def updates_menu_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
 def forum_group_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Здоровье форум-группы", callback_data="menu:health")],
             [InlineKeyboardButton("Дата следующего форума", callback_data="menu:date")],
+            [InlineKeyboardButton("Здоровье форум-группы", callback_data="menu:health")],
             [InlineKeyboardButton("Справочник форума", callback_data="guide:open")],
             [InlineKeyboardButton("О моей форум-группе", callback_data="forum_group:info")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
@@ -1088,7 +1091,7 @@ async def show_menu(update: Update) -> None:
 async def show_info_menu(update: Update) -> None:
     await reply(
         update,
-        "<b>Информация</b>\nВыбери, что нужно:",
+        "<b>Доп. информация</b>\nВыбери, что нужно:",
         reply_markup=info_inline_keyboard(),
     )
 
@@ -1404,6 +1407,8 @@ async def route_text(
         "новая запись в дневнике": lambda: start_diary_entry(update, user),
         "личный кабинет": lambda: show_profile_cabinet(update, user),
         "информация": lambda: show_info_menu(update),
+        "доп. информация": lambda: show_info_menu(update),
+        "доп информация": lambda: show_info_menu(update),
         "о боте": lambda: send_about(update),
         "режим дневника": lambda: show_diary_mode_menu(update, user),
         "промпт дневника": lambda: start_diary_prompt_setup(update, user, enable=True),
@@ -1916,7 +1921,6 @@ def profile_cabinet_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Файлы", callback_data="profile:edit:keep_files"),
                 InlineKeyboardButton("Дата форума", callback_data="profile:edit:next_forum_date"),
             ],
-            [InlineKeyboardButton("Информация", callback_data="menu:info")],
             [InlineKeyboardButton("Удалить мои данные", callback_data="delete:ask")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]

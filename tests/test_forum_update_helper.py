@@ -265,8 +265,8 @@ def test_main_menu_uses_high_level_submenus():
         if button.callback_data
     ]
 
-    assert main_buttons == ["Апдейты", "Моя форум-группа", "Дневник", "Личный кабинет"]
-    assert inline_callbacks == ["updates:menu", "forum_group:menu", "diary:menu", "profile:show"]
+    assert main_buttons == ["Апдейты", "Моя форум-группа", "Дневник", "Личный кабинет", "Доп. информация"]
+    assert inline_callbacks == ["updates:menu", "forum_group:menu", "diary:menu", "profile:show", "menu:info"]
     assert "Удалить мои данные" not in main_buttons
 
 
@@ -349,6 +349,7 @@ def test_submenus_include_back_buttons():
     assert "Назад" in diary_labels
     assert "Назад" in guide_labels
     assert "Назад" in edit_labels
+    assert forum_group_labels[:2] == ["Дата следующего форума", "Здоровье форум-группы"]
 
 
 def test_flow_keyboard_uses_native_next_and_back_actions():
@@ -382,6 +383,7 @@ def test_updates_menu_has_update_actions_and_profile_has_delete():
     assert "Пообщаться по динамике апдейтов" in update_labels
     assert "Удалить мои данные" in profile_labels
     assert "Скачать апдейт" not in profile_labels
+    assert "Доп. информация" not in profile_labels
 
 
 def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):

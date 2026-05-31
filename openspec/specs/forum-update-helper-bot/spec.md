@@ -60,16 +60,18 @@ forum dates SHALL be formatted as `DD.MM.YYYY`.
 - **THEN** the bot sends the admin only the user's full name and business club
 
 ### Requirement: Telegram-native menu
-The bot SHALL provide a compact persistent menu organized around four top-level
-sections: updates, forum group, diary, and personal cabinet. The updates section
+The bot SHALL provide a compact persistent menu organized around five top-level
+sections: updates, forum group, diary, personal cabinet, and additional
+information. The updates section
 SHALL contain actions to start a new update, edit the previous update with a
 date-aware label when available, list saved updates, download the latest update,
-and chat about update dynamics. The forum-group section SHALL contain health
-check, next forum date, forum guide, and forum-group information actions. The
+and chat about update dynamics. The forum-group section SHALL contain next forum
+date as the first action, followed by health check, forum guide, and forum-group
+information actions. The
 diary section SHALL contain a new diary entry action plus diary settings,
 prompt, reminder, and enable/disable actions. The personal cabinet SHALL contain
-profile editing, information submenu access, and delete-my-data action. The
-information submenu SHALL contain bot info, build your own bot, find
+profile editing and delete-my-data action. The additional-information submenu
+SHALL contain bot info, build your own bot, find
 psychologist, find mentor, and contact author actions. Bot descriptions SHALL
 state that the bot is compatible with AI agents and can export key data as
 Markdown files.
