@@ -431,7 +431,7 @@ def test_update_start_keyboard_offers_new_or_edit():
     assert labels == ["Новый апдейт", "Изменить предыдущий"]
 
 
-def test_updates_menu_has_update_actions_and_profile_has_delete():
+def test_updates_menu_is_simple_and_profile_has_delete():
     update_labels = [
         button.text
         for row in bot.updates_menu_keyboard({"last_update_at": "2026-04-26T10:00:00+03:00"}).inline_keyboard
@@ -439,15 +439,34 @@ def test_updates_menu_has_update_actions_and_profile_has_delete():
     ]
     profile_labels = [button.text for row in bot.profile_cabinet_keyboard().inline_keyboard for button in row]
 
-    assert "Начать новый апдейт" in update_labels
-    assert "Редактировать апдейт от 26.04.2026" in update_labels
-    assert "Список моих апдейтов" in update_labels
-    assert "Скачать .md для ИИ" in update_labels
-    assert "Открыть для чтения (HTML)" in update_labels
-    assert "Пообщаться по динамике апдейтов" in update_labels
+    assert update_labels == ["Новый апдейт", "Мои апдейты", "Назад"]
     assert "Удалить мои данные" in profile_labels
     assert "Скачать апдейт" not in profile_labels
     assert "Доп. информация" not in profile_labels
+
+
+def test_updates_list_keyboard_has_dynamic_and_per_update_actions(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "UPDATES_DIR", tmp_path)
+    user = {"telegram_user_id": 123}
+    user_dir = tmp_path / "123"
+    user_dir.mkdir()
+    (user_dir / "forum-update-20260426-1000.md").write_text("# Апдейт", encoding="utf-8")
+
+    buttons = [
+        button
+        for row in bot.updates_list_keyboard(user).inline_keyboard
+        for button in row
+    ]
+    labels = [button.text for button in buttons]
+    callbacks = [button.callback_data for button in buttons]
+
+    assert "Динамика апдейтов" in labels
+    assert "Редактировать 1" in labels
+    assert ".md (ИИ) 1" in labels
+    assert ".html 1" in labels
+    assert "updates:edit:0" in callbacks
+    assert "updates:md:0" in callbacks
+    assert "updates:html:0" in callbacks
 
 
 def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):

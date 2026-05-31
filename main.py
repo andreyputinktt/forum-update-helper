@@ -798,29 +798,11 @@ def info_inline_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def latest_update_label(user: dict[str, Any]) -> str:
-    value = str(user.get("last_update_at") or "").strip()
-    if value:
-        try:
-            updated_at = datetime.fromisoformat(value)
-            return f"Редактировать апдейт от {updated_at.strftime('%d.%m.%Y')}"
-        except ValueError:
-            pass
-    files = saved_update_files(user)
-    if files:
-        return f"Редактировать апдейт от {datetime.fromtimestamp(files[0].stat().st_mtime, TZ).strftime('%d.%m.%Y')}"
-    return "Редактировать предыдущий апдейт"
-
-
 def updates_menu_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Начать новый апдейт", callback_data="update:new")],
-            [InlineKeyboardButton(latest_update_label(user), callback_data="update:edit")],
-            [InlineKeyboardButton("Список моих апдейтов", callback_data="updates:list")],
-            [InlineKeyboardButton("Скачать .md для ИИ", callback_data="profile:download_files")],
-            [InlineKeyboardButton("Открыть для чтения (HTML)", callback_data="updates:read")],
-            [InlineKeyboardButton("Пообщаться по динамике апдейтов", callback_data="updates:chat")],
+            [InlineKeyboardButton("Новый апдейт", callback_data="update:new")],
+            [InlineKeyboardButton("Мои апдейты", callback_data="updates:list")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
     )
@@ -862,7 +844,7 @@ def back_to_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def back_to_updates_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="updates:menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="updates:list")]])
 
 
 def back_to_diary_keyboard() -> InlineKeyboardMarkup:
@@ -999,9 +981,11 @@ MENU_TEXT_ACTIONS = {
     "апдейты": "updates.menu",
     "подготовить апдейт": "updates.start",
     "начать новый апдейт": "updates.new",
+    "новый апдейт": "updates.new",
     "редактировать апдейт": "updates.edit",
     "изменить предыдущий": "updates.edit",
     "список моих апдейтов": "updates.list",
+    "мои апдейты": "updates.list",
     "скачать апдейт": "updates.download",
     "скачать .md для ии": "updates.download",
     "читать апдейт": "updates.read",
@@ -1294,8 +1278,7 @@ async def show_updates_menu(update: Update, user: dict[str, Any]) -> None:
     await reply(
         update,
         "<b>Апдейты</b>\n\n"
-        "Здесь можно начать новый апдейт, вернуться к предыдущему, скачать Markdown "
-        "или обсудить динамику по уже сохранённым апдейтам.",
+        "Главный раздел для подготовки и работы с уже сохранёнными апдейтами.",
         reply_markup=updates_menu_keyboard(fresh),
     )
 
@@ -1465,6 +1448,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
         await handle_onboarding_skip(update, context, data.split(":", 1)[1])
+    elif data.startswith("updates:edit:"):
+        if not await require_profile_settings(update, context, user):
+            return
+        await begin_update_flow(update, user, edit_previous=True, source_selector=data.rsplit(":", 1)[1])
+    elif data.startswith("updates:md:"):
+        await send_saved_update_files(update, user, source_selector=data.rsplit(":", 1)[1])
+    elif data.startswith("updates:html:"):
+        await send_readable_update_file(update, user, source_selector=data.rsplit(":", 1)[1])
     elif data in MENU_CALLBACK_ACTIONS:
         await run_menu_action(MENU_CALLBACK_ACTIONS[data], update, context, user)
     elif data.startswith("profile:edit:"):
@@ -2145,6 +2136,50 @@ def saved_update_files(user: dict[str, Any]) -> list[Path]:
     return sorted(user_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
+def stored_update_items(user: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for index, path in enumerate(saved_update_files(user)):
+        items.append(
+            {
+                "selector": str(index),
+                "filename": path.name,
+                "date": datetime.fromtimestamp(path.stat().st_mtime, TZ).strftime("%d.%m.%Y"),
+                "path": path,
+            }
+        )
+    latest_markdown = str(user.get("last_update_markdown") or "").strip()
+    latest_filename = str(user.get("last_update_filename") or "").strip()
+    if latest_markdown and latest_filename and not any(item["filename"] == latest_filename for item in items):
+        latest_at = format_forum_date(str(user.get("last_update_at") or "")[:10]) or datetime.now(TZ).strftime("%d.%m.%Y")
+        items.insert(
+            0,
+            {
+                "selector": "latest",
+                "filename": latest_filename,
+                "date": latest_at,
+                "path": None,
+            },
+        )
+    return items
+
+
+def updates_list_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("Динамика апдейтов", callback_data="updates:chat")]
+    ]
+    for index, item in enumerate(stored_update_items(user)[:10], start=1):
+        selector = item["selector"]
+        buttons.append(
+            [
+                InlineKeyboardButton(f"Редактировать {index}", callback_data=f"updates:edit:{selector}"),
+                InlineKeyboardButton(f".md (ИИ) {index}", callback_data=f"updates:md:{selector}"),
+                InlineKeyboardButton(f".html {index}", callback_data=f"updates:html:{selector}"),
+            ]
+        )
+    buttons.append([InlineKeyboardButton("Назад", callback_data="updates:menu")])
+    return InlineKeyboardMarkup(buttons)
+
+
 def looks_like_utf8_mojibake(text: str) -> bool:
     markers = sum(text.count(marker) for marker in ("Ð", "Ñ", "Â", "â", "�"))
     cyrillic = len(re.findall(r"[А-Яа-яЁё]", text))
@@ -2220,8 +2255,21 @@ def migrate_saved_update_markdown_files() -> int:
     return migrated
 
 
-def latest_update_markdown(user: dict[str, Any]) -> tuple[str, str] | None:
+def latest_update_markdown(user: dict[str, Any], source_selector: str | None = None) -> tuple[str, str] | None:
     files = saved_update_files(user)
+    if source_selector and source_selector != "latest":
+        try:
+            path = files[int(source_selector)]
+        except (ValueError, IndexError):
+            return None
+        text = read_markdown_file_text(path)
+        return (text, path.name) if text else None
+    if source_selector == "latest":
+        markdown = str(user.get("last_update_markdown") or "").strip()
+        if markdown:
+            filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
+            return repair_utf8_mojibake(markdown), str(filename)
+        return None
     if files:
         text = read_markdown_file_text(files[0])
         if text:
@@ -2352,8 +2400,8 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
     )
 
 
-async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
-    latest = latest_update_markdown(user)
+async def send_saved_update_files(update: Update, user: dict[str, Any], source_selector: str | None = None) -> None:
+    latest = latest_update_markdown(user, source_selector)
     if latest is None:
         await reply(
             update,
@@ -2371,8 +2419,8 @@ async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
     )
 
 
-async def send_readable_update_file(update: Update, user: dict[str, Any]) -> None:
-    latest = latest_update_markdown(user)
+async def send_readable_update_file(update: Update, user: dict[str, Any], source_selector: str | None = None) -> None:
+    latest = latest_update_markdown(user, source_selector)
     if latest is None:
         await reply(
             update,
@@ -2390,6 +2438,30 @@ async def send_readable_update_file(update: Update, user: dict[str, Any]) -> Non
         suffix=".html",
         caption="HTML-версия апдейта для чтения: открывается с форматированием на телефоне и компьютере.",
     )
+
+
+def compact_markdown_key(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def methodology_from_update_markdown(markdown: str) -> str | None:
+    match = re.search(r"^- Методика:\s*(.+)$", markdown, flags=re.M)
+    return normalize_methodology(match.group(1)) if match else None
+
+
+def parse_update_markdown_answers(markdown: str, questions: list[Question]) -> dict[str, str]:
+    prompt_to_answer: dict[str, str] = {}
+    for match in re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", markdown, flags=re.S):
+        prompt = compact_markdown_key(match.group(1))
+        answer = match.group(2).strip()
+        if answer and answer != "_Нет ответа_":
+            prompt_to_answer[prompt] = answer
+    answers: dict[str, str] = {}
+    for question in questions:
+        answer = prompt_to_answer.get(compact_markdown_key(question.prompt))
+        if answer:
+            answers[question.key] = answer
+    return answers
 
 
 def update_history_context(user: dict[str, Any], max_chars: int = 22000) -> str:
@@ -2412,18 +2484,19 @@ def update_history_context(user: dict[str, Any], max_chars: int = 22000) -> str:
 
 
 async def show_updates_list(update: Update, user: dict[str, Any]) -> None:
-    files = saved_update_files(user)
-    lines = ["<b>Мои апдейты</b>"]
-    latest_at = format_forum_date(str(user.get("last_update_at") or "")[:10])
-    latest_filename = str(user.get("last_update_filename") or "").strip()
-    if latest_filename:
-        lines.append(f"• Последний: <b>{esc(latest_filename)}</b>{f' от {esc(latest_at)}' if latest_at else ''}")
-    for index, path in enumerate(files[:12], start=1):
-        modified = datetime.fromtimestamp(path.stat().st_mtime, TZ).strftime("%d.%m.%Y")
-        lines.append(f"{index}. {esc(path.name)} — {modified}")
-    if len(lines) == 1:
+    items = stored_update_items(user)
+    lines = [
+        "<b>Мои апдейты</b>",
+        "",
+        "Можно посмотреть динамику по всем апдейтам или выбрать конкретный апдейт: отредактировать, скачать .md для ИИ или .html для чтения.",
+    ]
+    if items:
+        lines.append("")
+        for index, item in enumerate(items[:10], start=1):
+            lines.append(f"{index}. <b>{esc(item['date'])}</b> — {esc(item['filename'])}")
+    else:
         lines.append("\nПока нет сохранённых апдейтов. Начни новый апдейт, и он появится здесь.")
-    await reply(update, "\n".join(lines), reply_markup=updates_menu_keyboard(user))
+    await reply(update, "\n".join(lines), reply_markup=updates_list_keyboard(user))
 
 
 async def start_updates_chat(update: Update, user: dict[str, Any]) -> None:
@@ -2432,14 +2505,14 @@ async def start_updates_chat(update: Update, user: dict[str, Any]) -> None:
         await reply(
             update,
             "Пока нет апдейтов, по которым можно обсудить динамику. Начни новый апдейт, и я смогу сравнивать изменения.",
-            reply_markup=updates_menu_keyboard(user),
+            reply_markup=updates_list_keyboard(user),
         )
         return
     store.update_user(user["telegram_user_id"], state="updates:chat", active_flow=None)
     await reply(
         update,
-        "<b>Разговор по динамике апдейтов</b>\n\n"
-        "Напиши вопрос: например, «что повторяется?», «где я застреваю?» "
+        "<b>Динамика апдейтов</b>\n\n"
+        "Задай вопрос: например, «что повторяется?», «где я застреваю?» "
         "или «какая главная динамика по бизнесу за последние апдейты?»",
         reply_markup=back_to_updates_keyboard(),
     )
@@ -2733,13 +2806,33 @@ async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
     )
 
 
-async def begin_update_flow(update: Update, user: dict[str, Any], edit_previous: bool = False) -> None:
+async def begin_update_flow(
+    update: Update,
+    user: dict[str, Any],
+    edit_previous: bool = False,
+    source_selector: str | None = None,
+) -> None:
+    selected_markdown: str | None = None
+    if edit_previous and source_selector is not None:
+        selected_update = latest_update_markdown(user, source_selector)
+        if selected_update is not None:
+            selected_markdown = selected_update[0]
+            selected_methodology = methodology_from_update_markdown(selected_markdown)
+            if selected_methodology:
+                user = store.update_user(user["telegram_user_id"], methodology=selected_methodology)
+    elif edit_previous:
+        previous_methodology = normalize_methodology(user.get("last_update_methodology"))
+        if previous_methodology:
+            user = store.update_user(user["telegram_user_id"], methodology=previous_methodology)
+
     methodology = methodology_for_user(user)
     questions = update_questions_for_user(user)
     answers: dict[str, str] = {}
     mode = "new"
     if edit_previous:
-        previous_answers = parse_json_dict(user.get("last_update_answers"))
+        previous_answers = parse_json_dict(user.get("last_update_answers")) if source_selector is None else {}
+        if selected_markdown is not None:
+            previous_answers = parse_update_markdown_answers(selected_markdown, questions)
         matching_answers = {
             key: str(value)
             for key, value in previous_answers.items()
