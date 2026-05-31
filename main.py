@@ -993,6 +993,68 @@ def flow_keyboard(_show_next: bool = False) -> InlineKeyboardMarkup:
     )
 
 
+MENU_TEXT_ACTIONS = {
+    "апдейты": "updates.menu",
+    "подготовить апдейт": "updates.start",
+    "начать новый апдейт": "updates.new",
+    "редактировать апдейт": "updates.edit",
+    "изменить предыдущий": "updates.edit",
+    "список моих апдейтов": "updates.list",
+    "скачать апдейт": "updates.download",
+    "пообщаться по динамике апдейтов": "updates.chat",
+    "моя форум-группа": "forum_group.menu",
+    "дата следующего форума": "forum_group.date",
+    "здоровье форум-группы": "forum_group.health",
+    "справочник форума": "forum_group.guide",
+    "дневник": "diary.menu",
+    "новая запись в дневнике": "diary.entry",
+    "режим дневника": "diary.settings",
+    "промпт дневника": "diary.prompt",
+    "личный кабинет": "profile.show",
+    "доп. информация": "info.menu",
+    "доп информация": "info.menu",
+    "информация": "info.menu",
+    "о боте": "info.about",
+    "сделать собственный бот": "info.build_bot",
+    "ищу психолога": "info.psychologist",
+    "ищу коуча": "info.coach",
+    "ищу ментора": "info.coach",
+    "ищу ментора/коуча": "info.coach",
+    "связаться с автором": "info.author",
+    "удалить мои данные": "profile.delete",
+}
+
+
+MENU_CALLBACK_ACTIONS = {
+    "menu:root": "menu.root",
+    "updates:menu": "updates.menu",
+    "updates:list": "updates.list",
+    "updates:chat": "updates.chat",
+    "menu:update": "updates.start",
+    "update:new": "updates.new",
+    "update:edit": "updates.edit",
+    "profile:download_files": "updates.download",
+    "forum_group:menu": "forum_group.menu",
+    "forum_group:info": "forum_group.menu",
+    "menu:date": "forum_group.date",
+    "menu:health": "forum_group.health",
+    "guide:open": "forum_group.guide",
+    "guide:ask": "forum_group.guide_ask",
+    "diary:menu": "diary.menu",
+    "diary:new": "diary.entry",
+    "diary:mode": "diary.settings",
+    "diary:prompt": "diary.prompt",
+    "diary:enable": "diary.prompt",
+    "diary:disable": "diary.disable",
+    "diary:reminder": "diary.reminder",
+    "profile:show": "profile.show",
+    "menu:info": "info.menu",
+    "menu:about": "info.about",
+    "menu:author": "info.author",
+    "delete:ask": "profile.delete",
+}
+
+
 async def safe_send(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int | str,
@@ -1047,6 +1109,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.args and context.args[0].casefold() == "about":
         await send_about(update)
         return
+    await reply(update, "Обновил меню. Сейчас пройдём блок настроек.", reply_markup=MAIN_KEYBOARD)
     await start_onboarding(update, context, user)
 
 
@@ -1064,7 +1127,7 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
         "в MD-файлах. Можно отвечать текстом или голосом. Голос я транскрибирую "
         f"и покажу текст.\n\n<a href=\"{ABOUT_DEEPLINK}\">Подробно о боте</a>"
     )
-    await reply(update, text)
+    await reply(update, text, reply_markup=MAIN_KEYBOARD)
     store.update_user(
         user["telegram_user_id"],
         state="onboarding:methodology",
@@ -1086,6 +1149,126 @@ async def show_menu(update: Update) -> None:
         reply_markup=MAIN_KEYBOARD,
     )
     await reply(update, "Выбери раздел:", reply_markup=main_inline_keyboard())
+
+
+def reset_navigation_context(user: dict[str, Any]) -> dict[str, Any]:
+    return store.set_flow(user["telegram_user_id"], None)
+
+
+async def require_profile_settings(update: Update, context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any]) -> bool:
+    if is_profile_complete(user):
+        return True
+    await reply(
+        update,
+        "Перед апдейтом нужно заполнить блок настроек: формат форума, имя, форум-группу, хранение файлов и дату форума.",
+        reply_markup=MAIN_KEYBOARD,
+    )
+    await start_onboarding(update, context, user)
+    return False
+
+
+async def run_menu_action(
+    action: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    *,
+    interrupt: bool = True,
+) -> None:
+    fresh = reset_navigation_context(user) if interrupt else user
+    if action == "menu.root":
+        await show_menu(update)
+        return
+    if action == "updates.menu":
+        await show_updates_menu(update, fresh)
+        return
+    if action == "updates.start":
+        if not await require_profile_settings(update, context, fresh):
+            return
+        await start_update_flow(update, fresh)
+        return
+    if action == "updates.new":
+        if not await require_profile_settings(update, context, fresh):
+            return
+        await begin_update_flow(update, fresh, edit_previous=False)
+        return
+    if action == "updates.edit":
+        if not await require_profile_settings(update, context, fresh):
+            return
+        await begin_update_flow(update, fresh, edit_previous=True)
+        return
+    if action == "updates.list":
+        await show_updates_list(update, fresh)
+        return
+    if action == "updates.download":
+        await send_saved_update_files(update, fresh)
+        return
+    if action == "updates.chat":
+        await start_updates_chat(update, fresh)
+        return
+    if action == "forum_group.menu":
+        await show_forum_group_menu(update, fresh)
+        return
+    if action == "forum_group.date":
+        await ask_next_forum_date(update, fresh)
+        return
+    if action == "forum_group.health":
+        await start_health_flow(update, fresh)
+        return
+    if action == "forum_group.guide":
+        await show_forum_guide(update, fresh)
+        return
+    if action == "forum_group.guide_ask":
+        await start_guide_question(update, fresh)
+        return
+    if action == "diary.menu":
+        await show_diary_menu(update, fresh)
+        return
+    if action == "diary.entry":
+        await start_diary_entry(update, fresh)
+        return
+    if action == "diary.settings":
+        await show_diary_mode_menu(update, fresh)
+        return
+    if action == "diary.prompt":
+        await start_diary_prompt_setup(update, fresh, enable=True)
+        return
+    if action == "diary.disable":
+        updated = store.update_user(fresh["telegram_user_id"], diary_enabled=0, diary_reminder_time=None, state=None)
+        await reply(update, "Режим дневника выключен.", reply_markup=diary_menu_keyboard(updated))
+        return
+    if action == "diary.reminder":
+        await reply(update, "Когда напоминать о дневнике?", reply_markup=diary_reminder_keyboard(prefix="diary_reminder"))
+        return
+    if action == "profile.show":
+        await show_profile_cabinet(update, fresh)
+        return
+    if action == "profile.delete":
+        await ask_delete_data(update)
+        return
+    if action == "info.menu":
+        await show_info_menu(update)
+        return
+    if action == "info.about":
+        await send_about(update)
+        return
+    if action == "info.author":
+        await reply(update, esc(AUTHOR_TEXT))
+        return
+    if action == "info.build_bot":
+        await reply(
+            update,
+            f'<a href="{BUILD_BOT_DOC_URL}">Инструкция: сделать собственный бот</a>\n'
+            f'<a href="{REPO_URL}">Репозиторий</a>',
+        )
+        return
+    if action == "info.psychologist":
+        await reply(update, f'<a href="{PSYCHOLOGIST_URL}">Рекомендованные психологи</a>')
+        return
+    if action == "info.coach":
+        await reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>')
+        return
+    await show_menu(update)
 
 
 async def show_info_menu(update: Update) -> None:
@@ -1133,10 +1316,7 @@ async def show_diary_menu(update: Update, user: dict[str, Any]) -> None:
 async def cmd_menu(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "menu")
-    if not is_profile_complete(user):
-        await start_onboarding(update, _context, user)
-        return
-    await show_menu(update)
+    await run_menu_action("menu.root", update, _context, user)
 
 
 async def cmd_about(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1175,16 +1355,14 @@ async def send_about(update: Update) -> None:
 
 async def cmd_cancel(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
-    store.set_flow(user["telegram_user_id"], None)
-    store.update_user(user["telegram_user_id"], state=None)
     store.log_interaction(user["telegram_user_id"], "cancel")
-    await reply(update, "Сценарий остановлен. Возвращаю меню.", reply_markup=MAIN_KEYBOARD)
+    await run_menu_action("menu.root", update, _context, user)
 
 
 async def cmd_next_forum(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "next_forum")
-    await ask_next_forum_date(update, user)
+    await run_menu_action("forum_group.date", update, _context, user)
 
 
 async def ask_next_forum_date(update: Update, user: dict[str, Any]) -> None:
@@ -1200,31 +1378,31 @@ async def ask_next_forum_date(update: Update, user: dict[str, Any]) -> None:
 async def cmd_prepare(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "prepare_update")
-    await start_update_flow(update, user)
+    await run_menu_action("updates.start", update, _context, user)
 
 
 async def cmd_health(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "health")
-    await start_health_flow(update, user)
+    await run_menu_action("forum_group.health", update, _context, user)
 
 
 async def cmd_guide(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "guide")
-    await show_forum_guide(update, user)
+    await run_menu_action("forum_group.guide", update, _context, user)
 
 
 async def cmd_profile(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "profile")
-    await show_profile_cabinet(update, user)
+    await run_menu_action("profile.show", update, _context, user)
 
 
 async def cmd_diary(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     user = store.ensure_user(update)
     store.log_interaction(user["telegram_user_id"], "diary")
-    await show_diary_menu(update, user)
+    await run_menu_action("diary.menu", update, _context, user)
 
 
 async def cmd_stats(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1277,45 +1455,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
         await handle_onboarding_skip(update, context, data.split(":", 1)[1])
-    elif data == "updates:menu":
-        await show_updates_menu(update, user)
-    elif data == "updates:list":
-        await show_updates_list(update, user)
-    elif data == "updates:chat":
-        await start_updates_chat(update, user)
-    elif data == "forum_group:menu":
-        await show_forum_group_menu(update, user)
-    elif data == "forum_group:info":
-        await show_forum_group_menu(update, user)
-    elif data == "diary:menu":
-        await show_diary_menu(update, user)
-    elif data == "diary:new":
-        await start_diary_entry(update, user)
-    elif data == "menu:update":
-        await start_update_flow(update, user)
-    elif data == "update:new":
-        await begin_update_flow(update, user, edit_previous=False)
-    elif data == "update:edit":
-        await begin_update_flow(update, user, edit_previous=True)
-    elif data == "menu:date":
-        await ask_next_forum_date(update, user)
-    elif data == "menu:health":
-        await start_health_flow(update, user)
-    elif data == "menu:root":
-        if not str(user.get("state") or "").startswith("onboarding:"):
-            store.set_flow(user["telegram_user_id"], None)
-            store.update_user(user["telegram_user_id"], state=None)
-        await show_menu(update)
-    elif data == "menu:info":
-        await show_info_menu(update)
-    elif data == "guide:open":
-        await show_forum_guide(update, user)
-    elif data == "guide:ask":
-        await start_guide_question(update, user)
-    elif data == "profile:show":
-        await show_profile_cabinet(update, user)
-    elif data == "profile:download_files":
-        await send_saved_update_files(update, user)
+    elif data in MENU_CALLBACK_ACTIONS:
+        await run_menu_action(MENU_CALLBACK_ACTIONS[data], update, context, user)
     elif data.startswith("profile:edit:"):
         await start_profile_edit(update, user, data.rsplit(":", 1)[1])
     elif data.startswith("profile:club:"):
@@ -1392,47 +1533,9 @@ async def route_text(
         return
 
     lower = text.casefold()
-    shortcuts = {
-        "апдейты": lambda: show_updates_menu(update, user),
-        "подготовить апдейт": lambda: start_update_flow(update, user),
-        "начать новый апдейт": lambda: begin_update_flow(update, user, edit_previous=False),
-        "редактировать апдейт": lambda: begin_update_flow(update, user, edit_previous=True),
-        "список моих апдейтов": lambda: show_updates_list(update, user),
-        "пообщаться по динамике апдейтов": lambda: start_updates_chat(update, user),
-        "моя форум-группа": lambda: show_forum_group_menu(update, user),
-        "дата следующего форума": lambda: ask_next_forum_date(update, user),
-        "здоровье форум-группы": lambda: start_health_flow(update, user),
-        "справочник форума": lambda: show_forum_guide(update, user),
-        "дневник": lambda: show_diary_menu(update, user),
-        "новая запись в дневнике": lambda: start_diary_entry(update, user),
-        "личный кабинет": lambda: show_profile_cabinet(update, user),
-        "информация": lambda: show_info_menu(update),
-        "доп. информация": lambda: show_info_menu(update),
-        "доп информация": lambda: show_info_menu(update),
-        "о боте": lambda: send_about(update),
-        "режим дневника": lambda: show_diary_mode_menu(update, user),
-        "промпт дневника": lambda: start_diary_prompt_setup(update, user, enable=True),
-        "сделать собственный бот": lambda: reply(
-            update,
-            f'<a href="{BUILD_BOT_DOC_URL}">Инструкция: сделать собственный бот</a>\n'
-            f'<a href="{REPO_URL}">Репозиторий</a>',
-        ),
-        "ищу психолога": lambda: reply(update, f'<a href="{PSYCHOLOGIST_URL}">Рекомендованные психологи</a>'),
-        "ищу коуча": lambda: reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>'),
-        "ищу ментора": lambda: reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>'),
-        "ищу ментора/коуча": lambda: reply(update, f'<a href="{COACH_URL}">Менторы и коучи 5 Prism</a>'),
-        "связаться с автором": lambda: reply(update, esc(AUTHOR_TEXT)),
-        "удалить мои данные": lambda: ask_delete_data(update),
-    }
-    if lower in shortcuts and user.get("active_flow"):
-        await reply(
-            update,
-            "Сейчас идёт сценарий. Используй кнопки ⬅️ и ➡️ под вопросом или отправь ответ текстом/голосом.",
-            reply_markup=flow_keyboard(),
-        )
-        return
-    if lower in shortcuts and not user.get("state") and not user.get("active_flow"):
-        await shortcuts[lower]()
+    action = MENU_TEXT_ACTIONS.get(lower)
+    if action:
+        await run_menu_action(action, update, context, user)
         return
 
     if str(user.get("state") or "").startswith("onboarding:"):
@@ -1935,15 +2038,15 @@ async def show_profile_cabinet(update: Update, user: dict[str, Any]) -> None:
 
 async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -> None:
     if field == "business_club":
-        store.update_user(user["telegram_user_id"], state=None)
+        store.update_user(user["telegram_user_id"], state=None, active_flow=None)
         await reply(update, "Выбери бизнес-клуб.", reply_markup=business_club_keyboard(prefix="profile:club"))
         return
     if field == "methodology":
-        store.update_user(user["telegram_user_id"], state=None)
+        store.update_user(user["telegram_user_id"], state=None, active_flow=None)
         await reply(update, "Выбери методику подготовки апдейта.", reply_markup=methodology_keyboard(prefix="profile:methodology"))
         return
     if field == "keep_files":
-        store.update_user(user["telegram_user_id"], state=None)
+        store.update_user(user["telegram_user_id"], state=None, active_flow=None)
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -1956,7 +2059,7 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
         await reply(update, "Как поступать с файлами после обработки?", reply_markup=keyboard)
         return
     if field == "community_chat":
-        store.update_user(user["telegram_user_id"], state="profile:community_chat")
+        store.update_user(user["telegram_user_id"], state="profile:community_chat", active_flow=None)
         keyboard = InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("Очистить", callback_data="profile:clear_community")],
@@ -1972,7 +2075,7 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
         )
         return
     if field == "next_forum_date":
-        store.update_user(user["telegram_user_id"], state="profile:next_forum_date")
+        store.update_user(user["telegram_user_id"], state="profile:next_forum_date", active_flow=None)
         await reply(
             update,
             "Пришли новую дату форума: например, <code>23.06.2026</code>.",
@@ -1986,7 +2089,7 @@ async def start_profile_edit(update: Update, user: dict[str, Any], field: str) -
     if field not in prompts:
         await reply(update, "Не понял, какое поле изменить.")
         return
-    store.update_user(user["telegram_user_id"], state=f"profile:{field}")
+    store.update_user(user["telegram_user_id"], state=f"profile:{field}", active_flow=None)
     await reply(
         update,
         prompts[field],

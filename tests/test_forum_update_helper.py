@@ -190,6 +190,69 @@ def test_flow_next_can_skip_unanswered_question(tmp_path, monkeypatch):
     assert "Вопрос 2/" in replies[-1]
 
 
+def test_menu_text_interrupts_active_flow(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    replies = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, active_flow, active_step, flow_payload,
+            state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (123, 456, "update", 3, '{"answers": {"q": "old"}}', "flow:await_next", now, now),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(bot.route_text(None, None, test_store.get_user(123), "Апдейты"))
+
+    user = test_store.get_user(123)
+    assert user["active_flow"] is None
+    assert user["active_step"] == 0
+    assert user["flow_payload"] == "{}"
+    assert user["state"] is None
+    assert any("Апдейты" in reply for reply in replies)
+
+
+def test_new_update_requires_settings_when_profile_incomplete(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    replies = []
+    started = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    async def fake_start_onboarding(_update, _context, user):
+        started.append(user["telegram_user_id"])
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    monkeypatch.setattr(bot, "start_onboarding", fake_start_onboarding)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, full_name, business_club, forum_group,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (123, 456, "Андрей Путин", "Другое", "Форум", now, now),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(bot.run_menu_action("updates.new", None, None, test_store.get_user(123)))
+
+    assert started == [123]
+    assert "Перед апдейтом нужно заполнить блок настроек" in replies[0]
+
+
 def test_build_update_markdown_contains_sections():
     user = {
         "forum_group": "High Level",

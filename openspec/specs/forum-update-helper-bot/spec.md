@@ -74,7 +74,10 @@ profile editing and delete-my-data action. The additional-information submenu
 SHALL contain bot info, build your own bot, find
 psychologist, find mentor, and contact author actions. Bot descriptions SHALL
 state that the bot is compatible with AI agents and can export key data as
-Markdown files.
+Markdown files. Any top-level or submenu navigation action SHALL interrupt the
+current flow or state before opening the requested section. Starting a new update
+SHALL first route the user through the settings/onboarding block when required
+profile settings are incomplete.
 
 #### Scenario: User opens menu
 - **WHEN** an onboarded user sends `/menu`
