@@ -357,6 +357,10 @@ POST_FORUM_PLAN_QUESTIONS = [
         "Личный план действий",
     ),
 ]
+PERSONAL_PLAN_KEY = "personal_plan"
+POST_FORUM_PLAN_FLOW_QUESTIONS = [
+    Question(PERSONAL_PLAN_KEY, "Личный план действий по разбору", "Личный план действий")
+]
 
 HEALTH_QUESTIONS = [
     Question("energy", "Оцени энергию форум-группы после встречи по шкале 1-10. Почему так?", "Здоровье группы"),
@@ -1629,7 +1633,7 @@ async def route_text(
         return
 
     if user.get("active_flow") == "post_forum_plan":
-        await handle_question_answer(update, context, user, text, POST_FORUM_PLAN_QUESTIONS)
+        await handle_question_answer(update, context, user, text, flow_questions_for_user(user))
         return
 
     if user.get("diary_enabled"):
@@ -3351,15 +3355,14 @@ async def begin_post_forum_plan_flow(
         )
         return
     markdown, filename = selected
-    answers = parse_update_markdown_answers(markdown, POST_FORUM_PLAN_QUESTIONS)
+    answers = parse_personal_plan_answers(markdown)
     payload = {
         "answers": answers,
         "update_selector": source_selector,
         "update_filename": filename,
     }
     user = store.set_flow(user["telegram_user_id"], "post_forum_plan", 0, payload)
-    await reply(update, post_forum_plan_intro(), reply_markup=ReplyKeyboardRemove())
-    await ask_current_question(update, user, POST_FORUM_PLAN_QUESTIONS)
+    await reply(update, post_forum_plan_intro(), reply_markup=flow_keyboard(False))
 
 
 def question_message(question: Question, step: int, total: int, current_answer: str = "") -> str:
@@ -3381,7 +3384,7 @@ def flow_questions_for_user(user: dict[str, Any]) -> list[Question]:
     if flow == "health":
         return HEALTH_QUESTIONS
     if flow == "post_forum_plan":
-        return POST_FORUM_PLAN_QUESTIONS
+        return POST_FORUM_PLAN_FLOW_QUESTIONS
     return []
 
 
@@ -3392,6 +3395,10 @@ async def ask_current_question(
 ) -> None:
     step = int(user.get("active_step") or 0)
     if step >= len(questions):
+        return
+    if user.get("active_flow") == "post_forum_plan":
+        store.update_user(user["telegram_user_id"], state=None)
+        await reply(update, post_forum_plan_intro(), reply_markup=flow_keyboard(False))
         return
     question = questions[step]
     payload = store.payload(user)
@@ -3537,14 +3544,34 @@ def build_update_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
+def parse_personal_plan_answers(markdown: str) -> dict[str, str]:
+    flow_answers = parse_update_markdown_answers(markdown, POST_FORUM_PLAN_FLOW_QUESTIONS)
+    if answer_text_is_filled(str(flow_answers.get(PERSONAL_PLAN_KEY) or "")):
+        return {PERSONAL_PLAN_KEY: str(flow_answers[PERSONAL_PLAN_KEY])}
+
+    old_answers = parse_update_markdown_answers(markdown, POST_FORUM_PLAN_QUESTIONS)
+    chunks: list[str] = []
+    for question in POST_FORUM_PLAN_QUESTIONS:
+        answer = str(old_answers.get(question.key) or "").strip()
+        if answer_text_is_filled(answer):
+            chunks.append(f"{question.prompt}\n{answer}")
+    return {PERSONAL_PLAN_KEY: "\n\n".join(chunks)} if chunks else {}
+
+
 def personal_plan_answers_filled(answers: dict[str, str]) -> bool:
-    return any(answer_text_is_filled(str(answers.get(question.key) or "")) for question in POST_FORUM_PLAN_QUESTIONS)
+    return answer_text_is_filled(str(answers.get(PERSONAL_PLAN_KEY) or "")) or any(
+        answer_text_is_filled(str(answers.get(question.key) or "")) for question in POST_FORUM_PLAN_QUESTIONS
+    )
 
 
 def build_personal_plan_section(answers: dict[str, str]) -> str:
     if not personal_plan_answers_filled(answers):
         return ""
     lines = ["## Личный план действий", ""]
+    personal_plan = str(answers.get(PERSONAL_PLAN_KEY) or "").strip()
+    if answer_text_is_filled(personal_plan):
+        lines.extend(["**Личный план действий по разбору**", "", personal_plan, ""])
+        return "\n".join(lines).strip() + "\n"
     for question in POST_FORUM_PLAN_QUESTIONS:
         answer = str(answers.get(question.key) or "").strip()
         if not answer_text_is_filled(answer):
@@ -3996,12 +4023,6 @@ async def maybe_send_post_forum_plan(
         context,
         chat_id,
         post_forum_plan_intro(),
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    await safe_send(
-        context,
-        chat_id,
-        question_message(POST_FORUM_PLAN_QUESTIONS[0], 0, len(POST_FORUM_PLAN_QUESTIONS)),
         reply_markup=flow_keyboard(False),
     )
     store.mark_reminder(user["telegram_user_id"], "post_forum_plan", value)

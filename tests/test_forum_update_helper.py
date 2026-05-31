@@ -213,6 +213,44 @@ def test_finish_post_forum_plan_writes_selected_update_file(tmp_path, monkeypatc
     assert "записал в файл апдейта" in replies[-1]
 
 
+def test_begin_post_forum_plan_flow_sends_single_intro_message(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    monkeypatch.setattr(bot, "UPDATES_DIR", tmp_path / "updates")
+    replies = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    user_dir = bot.UPDATES_DIR / "123"
+    user_dir.mkdir(parents=True)
+    update_path = user_dir / "forum-update-20260531-1200.md"
+    update_path.write_text("# Апдейт\n\n## Я\n\n**Вопрос**\n\nОтвет\n", encoding="utf-8")
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (telegram_user_id, chat_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (123, 456, now, now),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(bot.begin_post_forum_plan_flow(None, test_store.get_user(123), source_selector="0"))
+
+    assert len(replies) == 1
+    assert "Личный план действий по разбору" in replies[0]
+    assert "Вопрос 1/2" not in replies[0]
+    assert "Текущий ответ" not in replies[0]
+
+
+def test_personal_plan_flow_uses_one_freeform_question():
+    user = {"active_flow": "post_forum_plan"}
+
+    assert [question.key for question in bot.flow_questions_for_user(user)] == [bot.PERSONAL_PLAN_KEY]
+
+
 def test_flow_next_can_skip_unanswered_question(tmp_path, monkeypatch):
     test_store = bot.Store(tmp_path / "state.sqlite3")
     monkeypatch.setattr(bot, "store", test_store)
