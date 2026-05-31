@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import html
 import json
@@ -1082,6 +1083,24 @@ async def reply(update: Update, text: str, **kwargs: Any) -> None:
             **kwargs,
         ),
     )
+
+
+async def send_chat_action(update: Update, action: str) -> None:
+    if update.effective_chat is None:
+        return
+    try:
+        await update.effective_chat.send_action(action)
+    except TelegramError as exc:
+        log.debug("send_chat_action failed chat_id=%s action=%s error=%s", update.effective_chat.id, action, exc)
+
+
+async def keep_chat_action(update: Update, action: str, interval_seconds: float = 4.0) -> None:
+    try:
+        while True:
+            await send_chat_action(update, action)
+            await asyncio.sleep(interval_seconds)
+    except asyncio.CancelledError:
+        return
 
 
 async def cmd_getid(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2778,9 +2797,22 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
         )
         return
     markdown, filename = latest
-    readable = await markdown_to_ai_readable_html(markdown, title=Path(filename).stem)
+    await reply(
+        update,
+        "<b>Готовлю HTML-версию апдейта</b>\n\n"
+        "Сейчас выделяю ключевые тезисы из полной .md-версии с помощью ИИ. "
+        "Обычно это занимает 20–30 секунд — просто подожди, файл придёт сюда.",
+    )
+    progress_task = asyncio.create_task(keep_chat_action(update, ChatAction.TYPING))
+    try:
+        readable = await markdown_to_ai_readable_html(markdown, title=Path(filename).stem)
+    finally:
+        progress_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await progress_task
     html_digest = hashlib.sha1(readable.encode("utf-8")).hexdigest()[:8]
     html_filename = f"{Path(filename).stem}-read-{html_digest}.html"
+    await send_chat_action(update, ChatAction.UPLOAD_DOCUMENT)
     await send_temp_document(
         update,
         readable.encode("utf-8"),
