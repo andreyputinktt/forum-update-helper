@@ -764,6 +764,91 @@ def test_markdown_to_ai_readable_html_uses_structured_ai_response(monkeypatch):
     assert "<li><strong>Оценка месяца: 6-&gt;8/10</strong></li>" in html
 
 
+def test_readable_html_cache_key_changes_when_markdown_changes():
+    first = bot.readable_html_cache_key("# Апдейт\n\nОтвет")
+    second = bot.readable_html_cache_key("# Апдейт\n\nОтвет изменён")
+
+    assert first != second
+    assert bot.readable_html_filename("forum-update.md", first).startswith("forum-update-read-")
+
+
+def test_send_readable_update_file_uses_cache(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    calls = {"ai": 0}
+    sent_files = []
+    replies = []
+
+    async def fake_ai(markdown, title="Форумный апдейт"):
+        calls["ai"] += 1
+        return f"<html><body>{bot.esc(title)} {bot.esc(markdown)}</body></html>", True
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    async def fake_send_temp_document(_update, payload, *, filename, suffix, caption):
+        sent_files.append((payload.decode("utf-8"), filename, suffix, caption))
+
+    async def fake_send_chat_action(_update, _action):
+        return None
+
+    monkeypatch.setattr(bot, "markdown_to_ai_readable_html_result", fake_ai)
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    monkeypatch.setattr(bot, "send_temp_document", fake_send_temp_document)
+    monkeypatch.setattr(bot, "send_chat_action", fake_send_chat_action)
+
+    user = {
+        "telegram_user_id": 123,
+        "last_update_markdown": "# Апдейт\n\n## Я\n\n**Вопрос**\n\nОтвет",
+        "last_update_filename": "forum-update-20260531-1200.md",
+    }
+
+    bot.asyncio.run(bot.send_readable_update_file(None, user, source_selector="latest"))
+    bot.asyncio.run(bot.send_readable_update_file(None, user, source_selector="latest"))
+
+    assert calls["ai"] == 1
+    assert len(sent_files) == 2
+    assert sent_files[0][1] == sent_files[1][1]
+    assert len(replies) == 1
+
+
+def test_send_readable_update_file_does_not_cache_uncacheable_fallback(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    calls = {"html": 0}
+    replies = []
+
+    async def fake_html(_markdown, title="Форумный апдейт"):
+        calls["html"] += 1
+        return f"<html><body>{bot.esc(title)}</body></html>", False
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    async def fake_send_temp_document(*_args, **_kwargs):
+        return None
+
+    async def fake_send_chat_action(_update, _action):
+        return None
+
+    monkeypatch.setattr(bot, "markdown_to_ai_readable_html_result", fake_html)
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    monkeypatch.setattr(bot, "send_temp_document", fake_send_temp_document)
+    monkeypatch.setattr(bot, "send_chat_action", fake_send_chat_action)
+
+    user = {
+        "telegram_user_id": 123,
+        "last_update_markdown": "# Апдейт\n\nОтвет",
+        "last_update_filename": "forum-update.md",
+    }
+
+    bot.asyncio.run(bot.send_readable_update_file(None, user, source_selector="latest"))
+    bot.asyncio.run(bot.send_readable_update_file(None, user, source_selector="latest"))
+
+    assert calls["html"] == 2
+    assert len(replies) == 2
+
+
 def test_forum_guide_context_loads_materials():
     context = bot.load_forum_guide_context("Классическая (YPO)")
 
@@ -828,6 +913,11 @@ def test_store_adds_diary_columns(tmp_path):
     assert "last_update_answers" in columns
     assert "last_update_markdown" in columns
     assert "last_post_forum_plan_answers" in columns
+    tables = {
+        row["name"]
+        for row in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    assert "readable_html_cache" in tables
 
 
 def test_apply_diary_reminder_choice_sets_default_prompt(tmp_path, monkeypatch):

@@ -61,6 +61,7 @@ TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
 UTF8_BOM = b"\xef\xbb\xbf"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 OPENAI_HTML_MODEL = os.getenv("OPENAI_HTML_MODEL", OPENAI_MODEL)
+HTML_BRIEF_CACHE_VERSION = "ai-html-brief-v1"
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
 OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
@@ -614,6 +615,16 @@ class Store:
                 sent_at TEXT NOT NULL,
                 PRIMARY KEY (telegram_user_id, reminder_type, reminder_key)
             );
+            CREATE TABLE IF NOT EXISTS readable_html_cache (
+                telegram_user_id INTEGER NOT NULL,
+                cache_key TEXT NOT NULL,
+                source_filename TEXT,
+                html_filename TEXT NOT NULL,
+                html_content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                PRIMARY KEY (telegram_user_id, cache_key)
+            );
             """
         )
         self._ensure_column("users", "methodology", "TEXT DEFAULT 'Классическая (YPO)'")
@@ -749,6 +760,65 @@ class Store:
         )
         self.conn.commit()
 
+    def get_readable_html_cache(self, telegram_user_id: int, cache_key: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT * FROM readable_html_cache
+            WHERE telegram_user_id = ? AND cache_key = ?
+            """,
+            (telegram_user_id, cache_key),
+        ).fetchone()
+        if row is None:
+            return None
+        self.conn.execute(
+            """
+            UPDATE readable_html_cache
+            SET last_used_at = ?
+            WHERE telegram_user_id = ? AND cache_key = ?
+            """,
+            (now_iso(), telegram_user_id, cache_key),
+        )
+        self.conn.commit()
+        return dict(row)
+
+    def save_readable_html_cache(
+        self,
+        telegram_user_id: int,
+        cache_key: str,
+        source_filename: str,
+        html_filename: str,
+        html_content: str,
+    ) -> None:
+        timestamp = now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO readable_html_cache (
+                telegram_user_id, cache_key, source_filename, html_filename,
+                html_content, created_at, last_used_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(telegram_user_id, cache_key) DO UPDATE SET
+                source_filename = excluded.source_filename,
+                html_filename = excluded.html_filename,
+                html_content = excluded.html_content,
+                last_used_at = excluded.last_used_at
+            """,
+            (telegram_user_id, cache_key, source_filename, html_filename, html_content, timestamp, timestamp),
+        )
+        self.conn.execute(
+            """
+            DELETE FROM readable_html_cache
+            WHERE telegram_user_id = ?
+              AND cache_key IN (
+                  SELECT cache_key FROM readable_html_cache
+                  WHERE telegram_user_id = ?
+                  ORDER BY last_used_at DESC
+                  LIMIT -1 OFFSET 20
+              )
+            """,
+            (telegram_user_id, telegram_user_id),
+        )
+        self.conn.commit()
+
     def stats(self) -> dict[str, int]:
         users = self.conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         interactions = self.conn.execute("SELECT COUNT(*) AS n FROM interactions").fetchone()["n"]
@@ -758,6 +828,7 @@ class Store:
         return {"users": users, "complete_users": complete, "interactions": interactions}
 
     def delete_user(self, telegram_user_id: int) -> None:
+        self.conn.execute("DELETE FROM readable_html_cache WHERE telegram_user_id = ?", (telegram_user_id,))
         self.conn.execute("DELETE FROM reminder_log WHERE telegram_user_id = ?", (telegram_user_id,))
         self.conn.execute("DELETE FROM interactions WHERE telegram_user_id = ?", (telegram_user_id,))
         self.conn.execute("DELETE FROM users WHERE telegram_user_id = ?", (telegram_user_id,))
@@ -2276,6 +2347,18 @@ def markdown_bytes_for_download(markdown: str) -> bytes:
     return UTF8_BOM + text.encode("utf-8")
 
 
+def readable_html_cache_key(markdown: str) -> str:
+    normalized = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff")).strip()
+    generator = "openai" if _openai is not None else "fallback"
+    source_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    material = f"{HTML_BRIEF_CACHE_VERSION}\n{OPENAI_HTML_MODEL}\n{generator}\n{source_hash}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def readable_html_filename(source_filename: str, cache_key: str) -> str:
+    return f"{Path(source_filename).stem}-read-{cache_key[:8]}.html"
+
+
 def ensure_markdown_file_has_utf8_bom(path: Path) -> bool:
     try:
         original = path.read_bytes()
@@ -2777,9 +2860,9 @@ def ai_brief_data_to_html_body(data: dict[str, Any], fallback_title: str) -> tup
     return title, body
 
 
-async def markdown_to_ai_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
+async def markdown_to_ai_readable_html_result(markdown: str, title: str = "Форумный апдейт") -> tuple[str, bool]:
     if _openai is None:
-        return markdown_to_readable_html(markdown, title=title)
+        return markdown_to_readable_html(markdown, title=title), True
 
     normalized = strip_empty_personal_plan_sections(repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff")))
     fallback_title_match = re.search(r"^#\s+(.+)$", normalized, flags=re.M)
@@ -2826,10 +2909,15 @@ async def markdown_to_ai_readable_html(markdown: str, title: str = "Форумн
     try:
         ai_text = await asyncio.to_thread(_call)
         _ai_title, body = ai_brief_data_to_html_body(extract_json_object(ai_text), fallback_title)
-        return render_brief_html_document(body, title)
+        return render_brief_html_document(body, title), True
     except Exception as exc:
         log.warning("AI readable HTML failed: %s", exc)
-        return markdown_to_readable_html(markdown, title=title)
+        return markdown_to_readable_html(markdown, title=title), False
+
+
+async def markdown_to_ai_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
+    readable, _cacheable = await markdown_to_ai_readable_html_result(markdown, title=title)
+    return readable
 
 
 async def send_saved_update_files(update: Update, user: dict[str, Any], source_selector: str | None = None) -> None:
@@ -2861,6 +2949,21 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
         )
         return
     markdown, filename = latest
+    cache_key = readable_html_cache_key(markdown)
+    cached = store.get_readable_html_cache(user["telegram_user_id"], cache_key)
+    if cached is not None:
+        readable = str(cached["html_content"])
+        html_filename = str(cached["html_filename"])
+        await send_chat_action(update, ChatAction.UPLOAD_DOCUMENT)
+        await send_temp_document(
+            update,
+            readable.encode("utf-8"),
+            filename=html_filename,
+            suffix=".html",
+            caption=UPDATE_HTML_CAPTION,
+        )
+        return
+
     await reply(
         update,
         "<b>Готовлю HTML-версию апдейта</b>\n\n"
@@ -2869,13 +2972,14 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
     )
     progress_task = asyncio.create_task(keep_chat_action(update, ChatAction.TYPING))
     try:
-        readable = await markdown_to_ai_readable_html(markdown, title=Path(filename).stem)
+        readable, cacheable = await markdown_to_ai_readable_html_result(markdown, title=Path(filename).stem)
     finally:
         progress_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await progress_task
-    html_digest = hashlib.sha1(readable.encode("utf-8")).hexdigest()[:8]
-    html_filename = f"{Path(filename).stem}-read-{html_digest}.html"
+    html_filename = readable_html_filename(filename, cache_key)
+    if cacheable:
+        store.save_readable_html_cache(user["telegram_user_id"], cache_key, filename, html_filename, readable)
     await send_chat_action(update, ChatAction.UPLOAD_DOCUMENT)
     await send_temp_document(
         update,
