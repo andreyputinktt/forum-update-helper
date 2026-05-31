@@ -533,7 +533,7 @@ def test_markdown_to_readable_html_has_charset_and_formatting():
     assert "<strong>Дата заполнения:</strong> 2026-05-31 14:20" in html
     assert "<h2>Раздел</h2>" in html
     assert "<h3>Вопрос</h3>" not in html
-    assert "<li><strong>Вопрос:</strong> пункт</li>" in html
+    assert "<li><strong>Вопрос: пункт</strong></li>" in html
 
 
 def test_extract_rating_summary_compacts_current_and_previous_month():
@@ -568,14 +568,70 @@ def test_markdown_to_readable_html_keeps_spheres_and_short_question_labels():
     assert "<h2>Я</h2>" in html
     assert "<h2>Моё дело</h2>" in html
     assert "<h3>Оценка месяца</h3>" not in html
-    assert "<li><strong>Оценка месяца:</strong> 6-&gt;8/10</li>" in html
-    assert "<li><strong>Оценка месяца:</strong> Стало спокойнее.</li>" in html
-    assert "<li><strong>Оценка месяца:</strong> Запустил новый процесс</li>" in html
-    assert "<li><strong>Оценка месяца:</strong> Договорился с партнёром</li>" in html
-    assert "<li><strong>Как было / что получилось:</strong> Планировал восстановиться. Получил больше энергии.</li>" in html
+    assert "<li><strong>Оценка месяца: 6-&gt;8/10</strong></li>" in html
+    assert "<li><strong>Оценка месяца: Стало спокойнее.</strong></li>" in html
+    assert "<li><strong>Оценка месяца: Запустил новый процесс</strong></li>" in html
+    assert "<li><strong>Оценка месяца: Договорился с партнёром</strong></li>" in html
+    assert "<li><strong>Как было / что получилось: Планировал восстановиться. Получил больше энергии.</strong></li>" in html
     assert "Дата форума" in html
     assert "2026-05-31 14:20" in html
     assert "**Моё дело" not in html
+
+
+def test_ai_brief_data_to_html_body_renders_bold_theses():
+    _title, body = bot.ai_brief_data_to_html_body(
+        {
+            "title": "Форум-апдейт",
+            "meta": [{"label": "Дата заполнения", "value": "31.05.2026"}],
+            "sections": [
+                {
+                    "title": "Я",
+                    "bullets": [
+                        {"label": "Оценка месяца", "text": "6->8/10"},
+                        {"label": "Чувства", "text": "спокойствие, интерес"},
+                    ],
+                }
+            ],
+        },
+        "Форум-апдейт",
+    )
+
+    html = "".join(body)
+    assert "<h2>Я</h2>" in html
+    assert "<li><strong>Оценка месяца: 6-&gt;8/10</strong></li>" in html
+    assert "<li><strong>Чувства: спокойствие, интерес</strong></li>" in html
+
+
+def test_markdown_to_ai_readable_html_uses_structured_ai_response(monkeypatch):
+    class FakeResponses:
+        def create(self, **_kwargs):
+            class Response:
+                output_text = bot.json.dumps(
+                    {
+                        "title": "ИИ-апдейт",
+                        "meta": [{"label": "Дата заполнения", "value": "31.05.2026"}],
+                        "sections": [
+                            {
+                                "title": "Моё дело",
+                                "bullets": [{"label": "Оценка месяца", "text": "6->8/10"}],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+
+            return Response()
+
+    class FakeOpenAI:
+        responses = FakeResponses()
+
+    monkeypatch.setattr(bot, "_openai", FakeOpenAI())
+
+    html = bot.asyncio.run(bot.markdown_to_ai_readable_html("# Фолбэк\n\n## Раздел\n\n**Вопрос**\n\nОтвет"))
+
+    assert "<h1>ИИ-апдейт</h1>" in html
+    assert "<h2>Моё дело</h2>" in html
+    assert "<li><strong>Оценка месяца: 6-&gt;8/10</strong></li>" in html
 
 
 def test_forum_guide_context_loads_materials():

@@ -59,6 +59,7 @@ PRE_FORUM_REMINDER_DAYS = tuple(
 TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
 UTF8_BOM = b"\xef\xbb\xbf"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+OPENAI_HTML_MODEL = os.getenv("OPENAI_HTML_MODEL", OPENAI_MODEL)
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
 OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
@@ -2519,18 +2520,56 @@ def brief_question_label(prompt: str) -> str:
 def item_answer_html(item: dict[str, str]) -> str:
     theses = split_answer_theses(item["answer"])
     raw_label = brief_question_label(item["prompt"])
-    label = markdown_inline_to_html(raw_label)
     if not theses:
         return ""
     bullets: list[str] = []
     if raw_label == "Оценка месяца":
         if rating_summary := extract_rating_summary(item["answer"]):
-            bullets.append(f"<li><strong>{label}:</strong> {markdown_inline_to_html(rating_summary)}</li>")
+            bullets.append(render_brief_bullet(raw_label, rating_summary))
         theses = [cleaned for thesis in theses if (cleaned := strip_rating_prefix(thesis))]
-    bullets.extend(f"<li><strong>{label}:</strong> {markdown_inline_to_html(thesis)}</li>" for thesis in theses)
+    bullets.extend(render_brief_bullet(raw_label, thesis) for thesis in theses)
     if not bullets:
         return ""
     return f'<div class="qa"><ul class="theses">{"".join(bullets)}</ul></div>'
+
+
+def render_brief_bullet(label: str, text: str) -> str:
+    label = str(label or "").strip()
+    text = str(text or "").strip()
+    if not label and not text:
+        return ""
+    if label and text:
+        content = f"{markdown_inline_to_html(label)}: {markdown_inline_to_html(text)}"
+    else:
+        content = markdown_inline_to_html(label or text)
+    return f"<li><strong>{content}</strong></li>"
+
+
+def render_brief_html_document(body: list[str], title: str = "Форумный апдейт") -> str:
+    document_title = html.escape(title, quote=True)
+    return (
+        "<!doctype html>\n"
+        '<html lang="ru">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{document_title}</title>\n"
+        "<style>\n"
+        ":root{color-scheme:light dark;}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "font-size:17px;line-height:1.55;background:#f7f7f4;color:#1f2328;}main{max-width:760px;margin:0 auto;"
+        "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
+        "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}p{margin:8px 0 16px;}"
+        "ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
+        ".subtitle{color:#62666d;margin-top:-10px;}.meta{list-style:none;padding:12px 14px;margin:18px 0 24px;"
+        "background:rgba(184,137,66,.10);border-left:4px solid #b88942;}.qa{margin:12px 0 18px;}"
+        ".theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
+        "@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}h2{border-color:#333;}"
+        ".meta{background:rgba(184,137,66,.16);}.subtitle,em{color:#b8b8b8;}}\n"
+        "</style>\n"
+        "</head>\n"
+        f"<body><main>{''.join(body)}</main></body>\n"
+        "</html>\n"
+    )
 
 
 def update_markdown_to_brief_html_body(markdown: str) -> tuple[str, list[str]]:
@@ -2584,32 +2623,130 @@ def update_markdown_to_brief_html_body(markdown: str) -> tuple[str, list[str]]:
 
 
 def markdown_to_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
-    document_title = html.escape(title, quote=True)
     _update_title, body = update_markdown_to_brief_html_body(markdown)
+    return render_brief_html_document(body, title)
 
-    return (
-        "<!doctype html>\n"
-        '<html lang="ru">\n'
-        "<head>\n"
-        '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>{document_title}</title>\n"
-        "<style>\n"
-        ":root{color-scheme:light dark;}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
-        "font-size:17px;line-height:1.55;background:#f7f7f4;color:#1f2328;}main{max-width:760px;margin:0 auto;"
-        "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
-        "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}p{margin:8px 0 16px;}"
-        "ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
-        ".subtitle{color:#62666d;margin-top:-10px;}.meta{list-style:none;padding:12px 14px;margin:18px 0 24px;"
-        "background:rgba(184,137,66,.10);border-left:4px solid #b88942;}.qa{margin:12px 0 18px;}"
-        ".theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
-        "@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}h2{border-color:#333;}"
-        ".meta{background:rgba(184,137,66,.16);}.subtitle,em{color:#b8b8b8;}}\n"
-        "</style>\n"
-        "</head>\n"
-        f"<body><main>{''.join(body)}</main></body>\n"
-        "</html>\n"
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    clean = str(text or "").strip()
+    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.I | re.S).strip()
+    try:
+        value = json.loads(clean)
+    except json.JSONDecodeError:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        value = json.loads(clean[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("AI HTML brief response must be a JSON object")
+    return value
+
+
+def ai_brief_data_to_html_body(data: dict[str, Any], fallback_title: str) -> tuple[str, list[str]]:
+    title = str(data.get("title") or fallback_title or "Форумный апдейт").strip()
+    body = [
+        f"<h1>{markdown_inline_to_html(title)}</h1>",
+        '<p class="subtitle">Короткая версия для чтения на форуме</p>',
+    ]
+
+    meta_items: list[str] = []
+    raw_meta = data.get("meta") or []
+    if isinstance(raw_meta, dict):
+        raw_meta = [{"label": key, "value": value} for key, value in raw_meta.items()]
+    if isinstance(raw_meta, list):
+        for item in raw_meta:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if label and value:
+                meta_items.append(
+                    f"<li><strong>{markdown_inline_to_html(label)}:</strong> {markdown_inline_to_html(value)}</li>"
+                )
+    if meta_items:
+        body.append(f'<ul class="meta">{"".join(meta_items)}</ul>')
+
+    rendered = False
+    for section in data.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        heading = str(section.get("title") or "").strip()
+        raw_bullets = section.get("bullets") or []
+        bullets: list[str] = []
+        if isinstance(raw_bullets, list):
+            for bullet in raw_bullets:
+                if isinstance(bullet, dict):
+                    rendered_bullet = render_brief_bullet(
+                        str(bullet.get("label") or "").strip(),
+                        str(bullet.get("text") or "").strip(),
+                    )
+                else:
+                    rendered_bullet = render_brief_bullet("", str(bullet or "").strip())
+                if rendered_bullet:
+                    bullets.append(rendered_bullet)
+        if not heading or not bullets:
+            continue
+        body.append(f"<h2>{markdown_inline_to_html(heading)}</h2>")
+        body.append(f'<div class="qa"><ul class="theses">{"".join(bullets)}</ul></div>')
+        rendered = True
+    if not rendered:
+        raise ValueError("AI HTML brief response has no renderable sections")
+    return title, body
+
+
+async def markdown_to_ai_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
+    if _openai is None:
+        return markdown_to_readable_html(markdown, title=title)
+
+    normalized = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+    fallback_title_match = re.search(r"^#\s+(.+)$", normalized, flags=re.M)
+    fallback_title = fallback_title_match.group(1).strip() if fallback_title_match else title
+    system = (
+        "Ты редактор форумного апдейта. На входе полный Markdown-апдейт. "
+        "Нужно сделать короткую версию для чтения автором на форум-встрече. "
+        "Не добавляй интерпретаций, советов и новых смыслов. Бери только то, что есть в апдейте. "
+        "Сохраняй структуру из Markdown: метаданные, затем основные разделы и сферы. "
+        "Каждый ответ сократи до ключевых тезисов. Для оценки месяца дай отдельный тезис "
+        "в формате 'предыдущая->текущая/10', например '6->8/10'; если предыдущей нет, '8/10'. "
+        "Возвращай только JSON без Markdown-разметки и без HTML."
     )
+    prompt = (
+        "Верни JSON строго такой формы:\n"
+        "{\n"
+        '  "title": "Форум-апдейт ...",\n'
+        '  "meta": [{"label": "Участник", "value": "..."}, {"label": "Дата форума", "value": "..."}],\n'
+        '  "sections": [\n'
+        '    {"title": "Я", "bullets": [{"label": "Оценка месяца", "text": "6->8/10"}, '
+        '{"label": "Как было / что получилось", "text": "ключевой тезис"}]}\n'
+        "  ]\n"
+        "}\n\n"
+        "Правила:\n"
+        "- Оставь дату заполнения, если она есть в Markdown.\n"
+        "- Сохрани разделение по сферам: Я, Моё дело, Моя семья / близкие или Бизнес, Семья, Личное.\n"
+        "- В bullets используй короткую метку вопроса в label и один тезис в text.\n"
+        "- text должен быть обычным текстом без HTML и Markdown.\n"
+        "- Лучше 1-3 тезиса на вопрос, только самое важное.\n\n"
+        f"Markdown-апдейт:\n{normalized[:50000]}"
+    )
+
+    def _call() -> str:
+        response = _openai.responses.create(
+            model=OPENAI_HTML_MODEL,
+            instructions=system,
+            input=prompt,
+            max_output_tokens=3200,
+            text={"verbosity": "low"},
+        )
+        return extract_response_text(response)
+
+    try:
+        ai_text = await asyncio.to_thread(_call)
+        _ai_title, body = ai_brief_data_to_html_body(extract_json_object(ai_text), fallback_title)
+        return render_brief_html_document(body, title)
+    except Exception as exc:
+        log.warning("AI readable HTML failed: %s", exc)
+        return markdown_to_readable_html(markdown, title=title)
 
 
 async def send_saved_update_files(update: Update, user: dict[str, Any], source_selector: str | None = None) -> None:
@@ -2641,7 +2778,7 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
         )
         return
     markdown, filename = latest
-    readable = markdown_to_readable_html(markdown, title=Path(filename).stem)
+    readable = await markdown_to_ai_readable_html(markdown, title=Path(filename).stem)
     html_digest = hashlib.sha1(readable.encode("utf-8")).hexdigest()[:8]
     html_filename = f"{Path(filename).stem}-read-{html_digest}.html"
     await send_temp_document(
