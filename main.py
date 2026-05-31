@@ -2339,11 +2339,15 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
             body.append("</ol>")
             in_ol = False
 
-    for line in text.splitlines():
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         stripped = line.strip()
         if not stripped:
             close_paragraph()
             close_lists()
+            index += 1
             continue
         heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
         if heading:
@@ -2351,6 +2355,25 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
             close_lists()
             level = len(heading.group(1))
             body.append(f"<h{level}>{markdown_inline_to_html(heading.group(2))}</h{level}>")
+            index += 1
+            continue
+        if stripped.startswith("**"):
+            strong_lines = [stripped[2:]]
+            while not strong_lines[-1].rstrip().endswith("**") and index + 1 < len(lines):
+                index += 1
+                strong_lines.append(lines[index].strip())
+            if strong_lines[-1].rstrip().endswith("**"):
+                strong_lines[-1] = re.sub(r"\*\*\s*$", "", strong_lines[-1].rstrip())
+                strong_content = "<br>".join(
+                    markdown_inline_to_html(item) for item in strong_lines if item.strip()
+                )
+                close_paragraph()
+                close_lists()
+                body.append(f'<p class="question"><strong>{strong_content}</strong></p>')
+                index += 1
+                continue
+            paragraph.append(markdown_inline_to_html(stripped))
+            index += 1
             continue
         if stripped.startswith("- "):
             close_paragraph()
@@ -2361,6 +2384,7 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
                 body.append("<ul>")
                 in_ul = True
             body.append(f"<li>{markdown_inline_to_html(stripped[2:].strip())}</li>")
+            index += 1
             continue
         numbered = re.match(r"^\d+\.\s+(.+)$", stripped)
         if numbered:
@@ -2372,9 +2396,11 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
                 body.append("<ol>")
                 in_ol = True
             body.append(f"<li>{markdown_inline_to_html(numbered.group(1).strip())}</li>")
+            index += 1
             continue
         close_lists()
         paragraph.append(markdown_inline_to_html(stripped))
+        index += 1
     close_paragraph()
     close_lists()
 
@@ -2391,8 +2417,9 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
         "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
         "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}h3{font-size:18px;"
         "margin:24px 0 8px;}p{margin:10px 0 18px;}ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
+        ".question{margin:18px 0 10px;padding:10px 12px;border-left:4px solid #b88942;background:rgba(184,137,66,.10);}"
         "strong{font-weight:700;}em{color:#62666d;}@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}"
-        "h2{border-color:#333;}em{color:#b8b8b8;}}\n"
+        "h2{border-color:#333;}.question{background:rgba(184,137,66,.16);}em{color:#b8b8b8;}}\n"
         "</style>\n"
         "</head>\n"
         f"<body><main>{''.join(body)}</main></body>\n"

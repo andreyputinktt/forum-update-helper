@@ -511,6 +511,23 @@ def test_markdown_to_readable_html_has_charset_and_formatting():
     assert "<li>пункт</li>" in html
 
 
+def test_markdown_to_readable_html_handles_multiline_bold_questions():
+    markdown = (
+        "## Часть 1. Оценка трёх сфер\n\n"
+        "**Моё дело: дай оценку месяца:\n"
+        "- оценку этого месяца;\n"
+        "- оценку предыдущего месяца;\n"
+        "- что изменилось.**\n\n"
+        "Ответ"
+    )
+
+    html = bot.markdown_to_readable_html(markdown)
+
+    assert '<p class="question"><strong>Моё дело: дай оценку месяца:<br>- оценку этого месяца;' in html
+    assert "- что изменилось.</strong></p>" in html
+    assert "**Моё дело" not in html
+
+
 def test_forum_guide_context_loads_materials():
     context = bot.load_forum_guide_context("Классическая (YPO)")
 
