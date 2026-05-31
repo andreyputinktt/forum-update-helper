@@ -14,6 +14,12 @@ def test_parse_forum_date_ru_numeric():
     assert parsed == date(2026, 6, 23)
 
 
+def test_parse_forum_date_numeric_with_year_is_day_month_year():
+    assert bot.parse_forum_date("02.06.2026", base=date(2026, 5, 27)) == date(2026, 6, 2)
+    assert bot.format_forum_date("2026-06-02") == "02.06.2026"
+    assert bot.format_forum_date("02.06.2026") == "02.06.2026"
+
+
 def test_parse_forum_date_short_day_month_current_or_next_year():
     assert bot.parse_forum_date("2.06", base=date(2026, 5, 28)) == date(2026, 6, 2)
     assert bot.parse_forum_date("14.03", base=date(2026, 5, 28)) == date(2027, 3, 14)
@@ -708,6 +714,23 @@ def test_markdown_to_readable_html_keeps_spheres_and_short_question_labels():
     assert "**Моё дело" not in html
 
 
+def test_readable_html_normalizes_forum_date_metadata():
+    markdown = (
+        "# Форум-апдейт\n\n"
+        "- Участник: Андрей\n"
+        "- Дата форума: 2026-06-02\n"
+        "- Создано: 2026-05-31 14:20\n\n"
+        "## Раздел\n\n"
+        "**Вопрос**\n\n"
+        "Ответ"
+    )
+
+    html = bot.markdown_to_readable_html(markdown)
+
+    assert "<strong>Дата форума:</strong> 02.06.2026" in html
+    assert "2026-06-02" not in html
+
+
 def test_ai_brief_data_to_html_body_renders_bold_theses():
     _title, body = bot.ai_brief_data_to_html_body(
         {
@@ -732,6 +755,22 @@ def test_ai_brief_data_to_html_body_renders_bold_theses():
     assert "<li><strong>Чувства: спокойствие, интерес</strong></li>" in html
 
 
+def test_ai_brief_data_to_html_body_uses_canonical_forum_date():
+    _title, body = bot.ai_brief_data_to_html_body(
+        {
+            "title": "Форум-апдейт",
+            "meta": [{"label": "Дата форума", "value": "06.02.2026"}],
+            "sections": [{"title": "Я", "bullets": [{"label": "Оценка месяца", "text": "8/10"}]}],
+        },
+        "Форум-апдейт",
+        {"Дата форума": "02.06.2026"},
+    )
+
+    html = "".join(body)
+    assert "<strong>Дата форума:</strong> 02.06.2026" in html
+    assert "06.02.2026" not in html
+
+
 def test_markdown_to_ai_readable_html_uses_structured_ai_response(monkeypatch):
     class FakeResponses:
         def create(self, **_kwargs):
@@ -739,7 +778,10 @@ def test_markdown_to_ai_readable_html_uses_structured_ai_response(monkeypatch):
                 output_text = bot.json.dumps(
                     {
                         "title": "ИИ-апдейт",
-                        "meta": [{"label": "Дата заполнения", "value": "31.05.2026"}],
+                        "meta": [
+                            {"label": "Дата форума", "value": "06.02.2026"},
+                            {"label": "Дата заполнения", "value": "31.05.2026"},
+                        ],
                         "sections": [
                             {
                                 "title": "Моё дело",
@@ -757,9 +799,18 @@ def test_markdown_to_ai_readable_html_uses_structured_ai_response(monkeypatch):
 
     monkeypatch.setattr(bot, "_openai", FakeOpenAI())
 
-    html = bot.asyncio.run(bot.markdown_to_ai_readable_html("# Фолбэк\n\n## Раздел\n\n**Вопрос**\n\nОтвет"))
+    markdown = (
+        "# Фолбэк\n\n"
+        "- Дата форума: 02.06.2026\n\n"
+        "## Раздел\n\n"
+        "**Вопрос**\n\n"
+        "Ответ"
+    )
+    html = bot.asyncio.run(bot.markdown_to_ai_readable_html(markdown))
 
     assert "<h1>ИИ-апдейт</h1>" in html
+    assert "<strong>Дата форума:</strong> 02.06.2026" in html
+    assert "06.02.2026" not in html
     assert "<h2>Моё дело</h2>" in html
     assert "<li><strong>Оценка месяца: 6-&gt;8/10</strong></li>" in html
 

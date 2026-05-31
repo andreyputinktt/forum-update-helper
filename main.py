@@ -61,7 +61,7 @@ TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
 UTF8_BOM = b"\xef\xbb\xbf"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 OPENAI_HTML_MODEL = os.getenv("OPENAI_HTML_MODEL", OPENAI_MODEL)
-HTML_BRIEF_CACHE_VERSION = "ai-html-brief-v1"
+HTML_BRIEF_CACHE_VERSION = "ai-html-brief-v2"
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
 OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
@@ -449,6 +449,18 @@ def parse_forum_date(value: str, base: date | None = None) -> date | None:
     if not value:
         return None
     base_date = base or datetime.now(TZ).date()
+    full_numeric_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\.?", value)
+    if full_numeric_match:
+        day = int(full_numeric_match.group(1))
+        month = int(full_numeric_match.group(2))
+        year_text = full_numeric_match.group(3)
+        year = int(year_text)
+        if len(year_text) == 2:
+            year += 2000
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
     short_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.?", value)
     if short_match:
         day = int(short_match.group(1))
@@ -2348,7 +2360,7 @@ def markdown_bytes_for_download(markdown: str) -> bytes:
 
 
 def readable_html_cache_key(markdown: str) -> str:
-    normalized = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff")).strip()
+    normalized = readable_html_source_markdown(markdown).strip()
     generator = "openai" if _openai is not None else "fallback"
     source_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     material = f"{HTML_BRIEF_CACHE_VERSION}\n{OPENAI_HTML_MODEL}\n{generator}\n{source_hash}"
@@ -2585,6 +2597,21 @@ def parse_update_metadata(markdown: str) -> dict[str, str]:
     return metadata
 
 
+def normalize_update_metadata_dates(markdown: str) -> str:
+    text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+
+    def replace_forum_date(match: re.Match[str]) -> str:
+        normalized = format_forum_date(match.group(2))
+        return f"{match.group(1)}{normalized or match.group(2).strip()}"
+
+    return re.sub(r"^(-\s*Дата форума:\s*)(.+)$", replace_forum_date, text, flags=re.M)
+
+
+def readable_html_source_markdown(markdown: str) -> str:
+    normalized = normalize_update_metadata_dates(markdown)
+    return strip_empty_personal_plan_sections(normalized)
+
+
 def answer_text_is_filled(answer: str) -> bool:
     clean = str(answer or "").strip()
     return bool(clean and clean != "_Нет ответа_")
@@ -2738,7 +2765,7 @@ def render_brief_html_document(body: list[str], title: str = "Форумный �
 
 
 def update_markdown_to_brief_html_body(markdown: str) -> tuple[str, list[str]]:
-    text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+    text = readable_html_source_markdown(markdown)
     title_match = re.search(r"^#\s+(.+)$", text, flags=re.M)
     title = title_match.group(1).strip() if title_match else "Форумный апдейт"
     metadata = parse_update_metadata(text)
@@ -2808,14 +2835,20 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return value
 
 
-def ai_brief_data_to_html_body(data: dict[str, Any], fallback_title: str) -> tuple[str, list[str]]:
+def ai_brief_data_to_html_body(
+    data: dict[str, Any],
+    fallback_title: str,
+    canonical_meta: dict[str, str] | None = None,
+) -> tuple[str, list[str]]:
     title = str(data.get("title") or fallback_title or "Форумный апдейт").strip()
+    canonical_meta = canonical_meta or {}
     body = [
         f"<h1>{markdown_inline_to_html(title)}</h1>",
         '<p class="subtitle">Короткая версия для чтения на форуме</p>',
     ]
 
     meta_items: list[str] = []
+    rendered_meta_labels: set[str] = set()
     raw_meta = data.get("meta") or []
     if isinstance(raw_meta, dict):
         raw_meta = [{"label": key, "value": value} for key, value in raw_meta.items()]
@@ -2825,10 +2858,18 @@ def ai_brief_data_to_html_body(data: dict[str, Any], fallback_title: str) -> tup
                 continue
             label = str(item.get("label") or "").strip()
             value = str(item.get("value") or "").strip()
+            if label in canonical_meta:
+                value = canonical_meta[label]
             if label and value:
                 meta_items.append(
                     f"<li><strong>{markdown_inline_to_html(label)}:</strong> {markdown_inline_to_html(value)}</li>"
                 )
+                rendered_meta_labels.add(label)
+    if canonical_meta.get("Дата форума") and "Дата форума" not in rendered_meta_labels:
+        meta_items.append(
+            f"<li><strong>{markdown_inline_to_html('Дата форума')}:</strong> "
+            f"{markdown_inline_to_html(canonical_meta['Дата форума'])}</li>"
+        )
     if meta_items:
         body.append(f'<ul class="meta">{"".join(meta_items)}</ul>')
 
@@ -2864,7 +2905,8 @@ async def markdown_to_ai_readable_html_result(markdown: str, title: str = "Фо�
     if _openai is None:
         return markdown_to_readable_html(markdown, title=title), True
 
-    normalized = strip_empty_personal_plan_sections(repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff")))
+    normalized = readable_html_source_markdown(markdown)
+    canonical_meta = parse_update_metadata(normalized)
     fallback_title_match = re.search(r"^#\s+(.+)$", normalized, flags=re.M)
     fallback_title = fallback_title_match.group(1).strip() if fallback_title_match else title
     system = (
@@ -2888,6 +2930,7 @@ async def markdown_to_ai_readable_html_result(markdown: str, title: str = "Фо�
         "}\n\n"
         "Правила:\n"
         "- Оставь дату заполнения, если она есть в Markdown.\n"
+        "- Дату форума копируй строго из метаданных Markdown в формате ДД.ММ.ГГГГ; не переставляй день и месяц.\n"
         "- Сохрани разделение по сферам: Я, Моё дело, Моя семья / близкие или Бизнес, Семья, Личное.\n"
         "- Раздел «Личный план действий» включай только если в нём есть реальные ответы; пустой раздел или `_Нет ответа_` полностью пропускай.\n"
         "- В bullets используй короткую метку вопроса в label и один тезис в text.\n"
@@ -2908,7 +2951,7 @@ async def markdown_to_ai_readable_html_result(markdown: str, title: str = "Фо�
 
     try:
         ai_text = await asyncio.to_thread(_call)
-        _ai_title, body = ai_brief_data_to_html_body(extract_json_object(ai_text), fallback_title)
+        _ai_title, body = ai_brief_data_to_html_body(extract_json_object(ai_text), fallback_title, canonical_meta)
         return render_brief_html_document(body, title), True
     except Exception as exc:
         log.warning("AI readable HTML failed: %s", exc)
