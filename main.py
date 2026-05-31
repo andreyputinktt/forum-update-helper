@@ -2367,37 +2367,147 @@ def split_answer_theses(answer: str) -> list[str]:
     return [shorten_thesis(thesis) for thesis in theses if thesis.strip() and thesis.strip() != "_Нет ответа_"]
 
 
-def update_section_theses(section_content: str) -> list[str]:
-    theses: list[str] = []
-    answer_matches = list(
-        re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", section_content, flags=re.S)
-    )
-    if answer_matches:
-        for match in answer_matches:
-            theses.extend(split_answer_theses(match.group(2)))
-        return theses
-    plain = re.sub(r"^\s*[-#].*$", "", section_content, flags=re.M).strip()
-    return split_answer_theses(plain)
+def parse_update_metadata(markdown: str) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    header = markdown.split("\n## ", 1)[0]
+    for match in re.finditer(r"^-\s*([^:]+):\s*(.+)$", header, flags=re.M):
+        key = match.group(1).strip()
+        value = match.group(2).strip()
+        if value:
+            metadata[key] = value
+    return metadata
+
+
+def parse_update_answer_items(markdown: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for section in re.finditer(r"^##\s+(.+?)\s*$\n(.*?)(?=^##\s+|\Z)", markdown, flags=re.M | re.S):
+        section_title = section.group(1).strip()
+        section_content = section.group(2)
+        for match in re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", section_content, flags=re.S):
+            answer = match.group(2).strip()
+            if answer and answer != "_Нет ответа_":
+                items.append(
+                    {
+                        "section": section_title,
+                        "prompt": compact_markdown_key(match.group(1)),
+                        "answer": answer,
+                    }
+                )
+    return items
+
+
+BRIEF_SPHERE_ORDER = ("Я", "Моё дело", "Моя семья / близкие", "Бизнес", "Семья", "Личное")
+
+
+def brief_sphere_for_item(section: str, prompt: str) -> str | None:
+    for sphere in BRIEF_SPHERE_ORDER:
+        if prompt.startswith(f"{sphere}:") or prompt.startswith(f"{sphere},"):
+            return sphere
+        if section.endswith(f". {sphere}") or section == sphere:
+            return sphere
+    return None
+
+
+def brief_question_label(prompt: str) -> str:
+    first_line = prompt.splitlines()[0].strip().rstrip(".:")
+    lowered = first_line.casefold()
+    if "дай оценку месяца" in lowered or "поставь оценку месяца" in lowered:
+        return "Оценка месяца"
+    if "собери ретроспективу" in lowered:
+        return "Как было / что получилось"
+    if "опиши следующий период" in lowered:
+        return "Чего хочу / следующий период"
+    if "самое важное" in lowered:
+        return "Что произошло"
+    if "почему эта ситуация важна" in lowered:
+        return "Почему важно / цена вопроса"
+    if "какие чувства" in lowered:
+        return "Чувства"
+    if "сформулируй главный запрос" in lowered:
+        return "Главный запрос и контекст"
+    if "денежный эквивалент" in lowered:
+        return "Цена вопроса"
+    if "идеальный результат" in lowered:
+        return "Идеальный результат и история"
+    if "что уже пробовал" in lowered:
+        return "Что уже пробовал"
+    if "выбери рабочую гипотезу" in lowered:
+        return "Рабочая гипотеза"
+    if "какая помощь нужна" in lowered:
+        return "Помощь от группы"
+    if "что хочешь фиксировать" in lowered:
+        return "Что фиксировать на встрече"
+    if "5% самых радостных" in lowered:
+        return "5% радостного"
+    if "5% самых тяжёлых" in lowered:
+        return "5% тяжёлого"
+    if "если бы ты презентовал" in lowered:
+        return "Тема для форума"
+    if "над чем ты хотел бы поработать" in lowered:
+        return "Главный вопрос к форуму"
+    classic_match = re.match(r"^(Бизнес|Семья|Личное),\s*(плюс|минус)", first_line, flags=re.I)
+    if classic_match:
+        return classic_match.group(2).capitalize()
+    return first_line
+
+
+def item_answer_html(item: dict[str, str]) -> str:
+    theses = split_answer_theses(item["answer"])
+    label = markdown_inline_to_html(brief_question_label(item["prompt"]))
+    if not theses:
+        return ""
+    if len(theses) == 1:
+        return f'<div class="qa"><h3>{label}</h3><p>{markdown_inline_to_html(theses[0])}</p></div>'
+    bullets = "".join(f"<li>{markdown_inline_to_html(thesis)}</li>" for thesis in theses)
+    return f'<div class="qa"><h3>{label}</h3><ul class="theses">{bullets}</ul></div>'
 
 
 def update_markdown_to_brief_html_body(markdown: str) -> tuple[str, list[str]]:
     text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
     title_match = re.search(r"^#\s+(.+)$", text, flags=re.M)
     title = title_match.group(1).strip() if title_match else "Форумный апдейт"
+    metadata = parse_update_metadata(text)
+    items = parse_update_answer_items(text)
     body = [
         f"<h1>{markdown_inline_to_html(title)}</h1>",
         '<p class="subtitle">Короткая версия для чтения на форуме</p>',
     ]
-    for section in re.finditer(r"^##\s+(.+?)\s*$\n(.*?)(?=^##\s+|\Z)", text, flags=re.M | re.S):
-        section_title = section.group(1).strip()
-        theses = update_section_theses(section.group(2))
-        if not theses:
+    meta_labels = {"Создано": "Дата заполнения"}
+    meta_items = []
+    for key in ("Участник", "Методика", "Дата форума", "Создано"):
+        if metadata.get(key):
+            label = meta_labels.get(key, key)
+            meta_items.append(
+                f"<li><strong>{markdown_inline_to_html(label)}:</strong> {markdown_inline_to_html(metadata[key])}</li>"
+            )
+    if meta_items:
+        body.append(f'<ul class="meta">{"".join(meta_items)}</ul>')
+
+    grouped_spheres: dict[str, list[dict[str, str]]] = {sphere: [] for sphere in BRIEF_SPHERE_ORDER}
+    section_groups: dict[str, list[dict[str, str]]] = {}
+    for item in items:
+        sphere = brief_sphere_for_item(item["section"], item["prompt"])
+        if sphere:
+            grouped_spheres.setdefault(sphere, []).append(item)
             continue
-        body.append(f"<h2>{markdown_inline_to_html(section_title)}</h2>")
-        body.append('<ul class="theses">')
-        body.extend(f"<li>{markdown_inline_to_html(thesis)}</li>" for thesis in theses)
-        body.append("</ul>")
-    if len(body) == 2:
+        section_groups.setdefault(item["section"], []).append(item)
+
+    rendered = False
+    for sphere in BRIEF_SPHERE_ORDER:
+        sphere_items = grouped_spheres.get(sphere) or []
+        if not sphere_items:
+            continue
+        body.append(f"<h2>{markdown_inline_to_html(sphere)}</h2>")
+        body.extend(item_html for item in sphere_items if (item_html := item_answer_html(item)))
+        rendered = True
+    for section, section_items in section_groups.items():
+        rendered_items = [item_html for item in section_items if (item_html := item_answer_html(item))]
+        if not rendered_items:
+            continue
+        body.append(f"<h2>{markdown_inline_to_html(section)}</h2>")
+        body.extend(rendered_items)
+        rendered = True
+    if not rendered:
         body.append("<p>В апдейте пока нет заполненных тезисов.</p>")
     return title, body
 
@@ -2418,10 +2528,12 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
         "font-size:17px;line-height:1.55;background:#f7f7f4;color:#1f2328;}main{max-width:760px;margin:0 auto;"
         "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
         "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}h3{font-size:18px;"
-        "margin:24px 0 8px;}p{margin:10px 0 18px;}ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
-        ".subtitle{color:#62666d;margin-top:-10px;}.theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
+        "margin:24px 0 8px;}p{margin:8px 0 16px;}ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
+        ".subtitle{color:#62666d;margin-top:-10px;}.meta{list-style:none;padding:12px 14px;margin:18px 0 24px;"
+        "background:rgba(184,137,66,.10);border-left:4px solid #b88942;}.qa{margin:16px 0 22px;}.qa h3{font-size:17px;"
+        "margin:0 0 6px;}.theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
         "@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}h2{border-color:#333;}"
-        ".subtitle,em{color:#b8b8b8;}}\n"
+        ".meta{background:rgba(184,137,66,.16);}.subtitle,em{color:#b8b8b8;}}\n"
         "</style>\n"
         "</head>\n"
         f"<body><main>{''.join(body)}</main></body>\n"
