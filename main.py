@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -2640,8 +2641,9 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
         )
         return
     markdown, filename = latest
-    html_filename = Path(filename).with_suffix(".html").name
     readable = markdown_to_readable_html(markdown, title=Path(filename).stem)
+    html_digest = hashlib.sha1(readable.encode("utf-8")).hexdigest()[:8]
+    html_filename = f"{Path(filename).stem}-read-{html_digest}.html"
     await send_temp_document(
         update,
         readable.encode("utf-8"),
