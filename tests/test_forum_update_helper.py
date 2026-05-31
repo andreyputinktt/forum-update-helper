@@ -162,6 +162,57 @@ def test_edit_previous_update_preloads_answers(tmp_path, monkeypatch):
     assert "Текущий ответ" in replies[-1]
 
 
+def test_finish_post_forum_plan_writes_selected_update_file(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    monkeypatch.setattr(bot, "UPDATES_DIR", tmp_path / "updates")
+    replies = []
+
+    async def fake_reply(_update, text, **_kwargs):
+        replies.append(text)
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    user_dir = bot.UPDATES_DIR / "123"
+    user_dir.mkdir(parents=True)
+    update_path = user_dir / "forum-update-20260531-1200.md"
+    update_path.write_text("# Апдейт\n\n## Я\n\n**Вопрос**\n\nОтвет\n", encoding="utf-8")
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, active_flow, active_step, flow_payload,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            123,
+            456,
+            "post_forum_plan",
+            1,
+            bot.json.dumps(
+                {"answers": {}, "update_selector": "0", "update_filename": update_path.name},
+                ensure_ascii=False,
+            ),
+            now,
+            now,
+        ),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(
+        bot.finish_post_forum_plan(
+            None,
+            test_store.get_user(123),
+            {"meeting_gratitude": "Поблагодарил группу.", "next_actions": "Записал выводы завтра утром."},
+        )
+    )
+
+    updated = bot.read_markdown_file_text(update_path)
+    assert "## Личный план действий" in updated
+    assert updated.rstrip().endswith("Записал выводы завтра утром.")
+    assert "записал в файл апдейта" in replies[-1]
+
+
 def test_flow_next_can_skip_unanswered_question(tmp_path, monkeypatch):
     test_store = bot.Store(tmp_path / "state.sqlite3")
     monkeypatch.setattr(bot, "store", test_store)
@@ -269,6 +320,45 @@ def test_build_update_markdown_contains_sections():
     assert "- Методика: С личной стратегией (X-Competence)" in md
     assert "Часть 1. Оценка трёх сфер" in md
     assert "8/10" in md
+
+
+def test_replace_personal_plan_section_appends_last_section():
+    markdown = "# Апдейт\n\n## Я\n\n**Вопрос**\n\nОтвет\n"
+    updated = bot.replace_personal_plan_section(
+        markdown,
+        {
+            "meeting_gratitude": "Поблагодарил себя за честность.",
+            "next_actions": "Согласовал встречу в офисе во вторник.",
+        },
+    )
+
+    assert updated.rstrip().endswith("Согласовал встречу в офисе во вторник.")
+    assert "## Личный план действий" in updated
+    assert "Поблагодарил себя за честность." in updated
+
+
+def test_replace_personal_plan_section_removes_empty_existing_section():
+    markdown = "# Апдейт\n\n## Я\n\n**Вопрос**\n\nОтвет\n\n## Личный план действий\n\n**План**\n\nСтарый план\n"
+    updated = bot.replace_personal_plan_section(markdown, {})
+
+    assert "## Я" in updated
+    assert "Старый план" not in updated
+    assert "## Личный план действий" not in updated
+
+
+def test_strip_empty_personal_plan_section_from_html_source():
+    markdown = (
+        "# Апдейт\n\n"
+        "## Личный план действий\n\n"
+        "**Благодарность себе и другим: что важно не забыть проговорить?**\n\n"
+        "_Нет ответа_\n\n"
+        "## Я\n\n"
+        "**Вопрос**\n\nОтвет\n"
+    )
+    html = bot.markdown_to_readable_html(markdown)
+
+    assert "<h2>Личный план действий</h2>" not in html
+    assert "<h2>Я</h2>" in html
 
 
 def test_classic_methodology_selects_classic_questions():
@@ -483,11 +573,13 @@ def test_update_item_line_uses_deeplinks_for_actions():
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_md_0"' in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_html_0"' in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_edit_0"' in line
+    assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_plan_0"' in line
     assert "Скачать:" in line
     assert "[.md]" in line
     assert "(полная, для ИИ)" in line
     assert "[.html]" in line
     assert "(короткая, для чтения)" in line
+    assert "Ввести личный план действий по разбору" in line
     assert "Редактировать" in line
 
 

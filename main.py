@@ -1133,7 +1133,7 @@ async def handle_start_payload(
     user: dict[str, Any],
     payload: str,
 ) -> bool:
-    match = re.fullmatch(r"upd_(md|html|edit)_([a-z0-9_-]+)", payload)
+    match = re.fullmatch(r"upd_(md|html|edit|plan)_([a-z0-9_-]+)", payload)
     if not match:
         return False
     action, selector = match.groups()
@@ -1142,6 +1142,9 @@ async def handle_start_payload(
         return True
     if action == "html":
         await send_readable_update_file(update, user, source_selector=selector)
+        return True
+    if action == "plan":
+        await begin_post_forum_plan_flow(update, user, source_selector=selector)
         return True
     if not await require_profile_settings(update, context, user):
         return True
@@ -1499,6 +1502,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await send_saved_update_files(update, user, source_selector=data.rsplit(":", 1)[1])
     elif data.startswith("updates:html:"):
         await send_readable_update_file(update, user, source_selector=data.rsplit(":", 1)[1])
+    elif data.startswith("updates:plan:"):
+        await begin_post_forum_plan_flow(update, user, source_selector=data.rsplit(":", 1)[1])
     elif data in MENU_CALLBACK_ACTIONS:
         await run_menu_action(MENU_CALLBACK_ACTIONS[data], update, context, user)
     elif data.startswith("profile:edit:"):
@@ -2225,7 +2230,8 @@ def update_item_line(index: int, item: dict[str, Any]) -> str:
         f"<b>{esc(item['date'])}</b>\n"
         f' - Скачать: <a href="{update_action_deeplink("md", selector)}">[.md]</a> (полная, для ИИ) '
         f'<a href="{update_action_deeplink("html", selector)}">[.html]</a> (короткая, для чтения)\n'
-        f' - <a href="{update_action_deeplink("edit", selector)}">Редактировать</a>'
+        f' - <a href="{update_action_deeplink("edit", selector)}">Редактировать</a>\n'
+        f' - <a href="{update_action_deeplink("plan", selector)}">Ввести личный план действий по разбору</a>'
     )
 
 
@@ -2328,6 +2334,35 @@ def latest_update_markdown(user: dict[str, Any], source_selector: str | None = N
         filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
         return repair_utf8_mojibake(markdown), str(filename)
     return None
+
+
+def selected_update_path(user: dict[str, Any], source_selector: str | None) -> Path | None:
+    if not source_selector or source_selector == "latest":
+        return None
+    files = saved_update_files(user)
+    try:
+        return files[int(source_selector)]
+    except (ValueError, IndexError):
+        return None
+
+
+def write_selected_update_markdown(
+    user: dict[str, Any],
+    source_selector: str | None,
+    markdown: str,
+    filename: str,
+) -> None:
+    normalized = repair_utf8_mojibake(str(markdown or "").strip()) + "\n"
+    path = selected_update_path(user, source_selector)
+    if path is not None:
+        path.write_bytes(markdown_bytes_for_download(normalized))
+    if source_selector == "latest" or not path or str(user.get("last_update_filename") or "") == filename:
+        store.update_user(
+            user["telegram_user_id"],
+            last_update_markdown=normalized,
+            last_update_filename=filename,
+            last_update_at=now_iso(),
+        )
 
 
 async def send_temp_document(
@@ -2463,14 +2498,38 @@ def parse_update_metadata(markdown: str) -> dict[str, str]:
     return metadata
 
 
+def answer_text_is_filled(answer: str) -> bool:
+    clean = str(answer or "").strip()
+    return bool(clean and clean != "_Нет ответа_")
+
+
+def section_has_filled_answers(section_content: str) -> bool:
+    for match in re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", section_content, flags=re.S):
+        if answer_text_is_filled(match.group(2)):
+            return True
+    return False
+
+
+def strip_empty_personal_plan_sections(markdown: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        title = match.group(1).strip()
+        content = match.group(2)
+        if title.casefold() == "личный план действий" and not section_has_filled_answers(content):
+            return ""
+        return match.group(0)
+
+    return re.sub(r"^##\s+(.+?)\s*$\n(.*?)(?=^##\s+|\Z)", replace, markdown, flags=re.M | re.S).strip() + "\n"
+
+
 def parse_update_answer_items(markdown: str) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
+    markdown = strip_empty_personal_plan_sections(markdown)
     for section in re.finditer(r"^##\s+(.+?)\s*$\n(.*?)(?=^##\s+|\Z)", markdown, flags=re.M | re.S):
         section_title = section.group(1).strip()
         section_content = section.group(2)
         for match in re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", section_content, flags=re.S):
             answer = match.group(2).strip()
-            if answer and answer != "_Нет ответа_":
+            if answer_text_is_filled(answer):
                 items.append(
                     {
                         "section": section_title,
@@ -2718,7 +2777,7 @@ async def markdown_to_ai_readable_html(markdown: str, title: str = "Форумн
     if _openai is None:
         return markdown_to_readable_html(markdown, title=title)
 
-    normalized = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+    normalized = strip_empty_personal_plan_sections(repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff")))
     fallback_title_match = re.search(r"^#\s+(.+)$", normalized, flags=re.M)
     fallback_title = fallback_title_match.group(1).strip() if fallback_title_match else title
     system = (
@@ -2743,6 +2802,7 @@ async def markdown_to_ai_readable_html(markdown: str, title: str = "Форумн
         "Правила:\n"
         "- Оставь дату заполнения, если она есть в Markdown.\n"
         "- Сохрани разделение по сферам: Я, Моё дело, Моя семья / близкие или Бизнес, Семья, Личное.\n"
+        "- Раздел «Личный план действий» включай только если в нём есть реальные ответы; пустой раздел или `_Нет ответа_` полностью пропускай.\n"
         "- В bullets используй короткую метку вопроса в label и один тезис в text.\n"
         "- text должен быть обычным текстом без HTML и Markdown.\n"
         "- Лучше 1-3 тезиса на вопрос, только самое важное.\n\n"
@@ -3258,6 +3318,50 @@ async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
     await ask_current_question(update, user, HEALTH_QUESTIONS)
 
 
+def post_forum_plan_intro() -> str:
+    return (
+        "<b>Личный план действий по разбору</b>\n\n"
+        "Эта секция будет записана в выбранный файл апдейта последним разделом "
+        "«Личный план действий».\n\n"
+        "Можно отвечать текстом или голосом. На каждый вопрос можно отправить несколько сообщений, "
+        "а к следующему вопросу я перейду только после кнопки ➡️.\n\n"
+        "<b>Что фиксируем</b>\n"
+        "1. Благодарность себе и другим: что важно не забыть проговорить?\n"
+        "2. Действия в ближайшее время.\n\n"
+        "<b>Для каждого действия укажи</b>\n"
+        "- глагол совершенного вида;\n"
+        "- где и когда;\n"
+        "- с помощью чего;\n"
+        "- какой результат;\n"
+        "- срок."
+    )
+
+
+async def begin_post_forum_plan_flow(
+    update: Update,
+    user: dict[str, Any],
+    source_selector: str | None = None,
+) -> None:
+    selected = latest_update_markdown(user, source_selector)
+    if selected is None:
+        await reply(
+            update,
+            "Не нашёл этот апдейт. Открой «Мои апдейты» и выбери файл ещё раз.",
+            reply_markup=updates_menu_keyboard(user),
+        )
+        return
+    markdown, filename = selected
+    answers = parse_update_markdown_answers(markdown, POST_FORUM_PLAN_QUESTIONS)
+    payload = {
+        "answers": answers,
+        "update_selector": source_selector,
+        "update_filename": filename,
+    }
+    user = store.set_flow(user["telegram_user_id"], "post_forum_plan", 0, payload)
+    await reply(update, post_forum_plan_intro(), reply_markup=ReplyKeyboardRemove())
+    await ask_current_question(update, user, POST_FORUM_PLAN_QUESTIONS)
+
+
 def question_message(question: Question, step: int, total: int, current_answer: str = "") -> str:
     message = (
         f"<b>{esc(question.section)}</b>\n"
@@ -3431,6 +3535,31 @@ def build_update_markdown(
     if reflection:
         lines.extend(["## Короткая менторская сводка", "", reflection.strip(), ""])
     return "\n".join(lines).strip() + "\n"
+
+
+def personal_plan_answers_filled(answers: dict[str, str]) -> bool:
+    return any(answer_text_is_filled(str(answers.get(question.key) or "")) for question in POST_FORUM_PLAN_QUESTIONS)
+
+
+def build_personal_plan_section(answers: dict[str, str]) -> str:
+    if not personal_plan_answers_filled(answers):
+        return ""
+    lines = ["## Личный план действий", ""]
+    for question in POST_FORUM_PLAN_QUESTIONS:
+        answer = str(answers.get(question.key) or "").strip()
+        if not answer_text_is_filled(answer):
+            continue
+        lines.extend([f"**{question.prompt}**", "", answer, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def replace_personal_plan_section(markdown: str, answers: dict[str, str]) -> str:
+    text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff")).strip()
+    text = re.sub(r"\n*^##\s+Личный план действий\s*$\n.*?(?=^##\s+|\Z)", "\n", text, flags=re.M | re.S).strip()
+    section = build_personal_plan_section(answers).strip()
+    if section:
+        text = f"{text}\n\n{section}"
+    return text.strip() + "\n"
 
 
 def question_list_markdown(title: str, questions: list[Question]) -> list[str]:
@@ -3608,11 +3737,39 @@ async def finish_update_flow(
 
 
 async def finish_post_forum_plan(update: Update, user: dict[str, Any], answers: dict[str, str]) -> None:
+    payload = store.payload(user)
     store.update_user(
         user["telegram_user_id"],
         last_post_forum_plan_answers=json.dumps(answers, ensure_ascii=False),
         last_post_forum_plan_at=now_iso(),
     )
+    source_selector = payload.get("update_selector")
+    update_filename = str(payload.get("update_filename") or "")
+    if source_selector is not None and update_filename:
+        selected = latest_update_markdown(user, str(source_selector))
+        if selected is None:
+            await reply(
+                update,
+                "Личный план действий сохранил в профиле, но выбранный файл апдейта уже не нашёл.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        markdown, filename = selected
+        updated_markdown = replace_personal_plan_section(markdown, answers)
+        write_selected_update_markdown(user, str(source_selector), updated_markdown, filename)
+        if personal_plan_answers_filled(answers):
+            await reply(
+                update,
+                "Личный план действий записал в файл апдейта последней секцией. Теперь можно скачать обновлённый .md или .html.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+        else:
+            await reply(
+                update,
+                "Личный план действий пустой — убрал эту секцию из файла апдейта.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+        return
     await reply(
         update,
         "Личный план действий зафиксировал. Следующим шагом спрошу здоровье форум-группы.",
@@ -3838,9 +3995,7 @@ async def maybe_send_post_forum_plan(
     await safe_send(
         context,
         chat_id,
-        "<b>Личный план действий после форума</b>\n\n"
-        "Перед health check зафиксируем две вещи: благодарность и ближайшие действия. "
-        "Можно отвечать текстом или голосом, а можно оставить вопрос пустым и нажать ➡️.",
+        post_forum_plan_intro(),
         reply_markup=ReplyKeyboardRemove(),
     )
     await safe_send(
