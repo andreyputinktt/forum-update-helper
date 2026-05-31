@@ -2367,6 +2367,70 @@ def split_answer_theses(answer: str) -> list[str]:
     return [shorten_thesis(thesis) for thesis in theses if thesis.strip() and thesis.strip() != "_Нет ответа_"]
 
 
+def rating_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        rating = int(value)
+    except ValueError:
+        return None
+    if 1 <= rating <= 10:
+        return str(rating)
+    return None
+
+
+def extract_rating_summary(answer: str) -> str | None:
+    text = re.sub(r"\s+", " ", str(answer or "")).strip()
+    if not text:
+        return None
+    direct = re.search(r"\b(10|[1-9])\s*(?:->|→)\s*(10|[1-9])\s*/?\s*10\b", text)
+    if direct:
+        previous = rating_value(direct.group(1))
+        current = rating_value(direct.group(2))
+        return f"{previous}->{current}/10" if previous and current else None
+
+    current_match = re.search(
+        r"(?:этого|текущ(?:его|ий|ая)|сейчас|нынешн(?:его|ий|ая))[^0-9]{0,80}(10|[1-9])(?:\s*/\s*10)?",
+        text,
+        flags=re.I,
+    )
+    previous_match = re.search(
+        r"(?:предыдущ(?:его|ий|ая)|прошл(?:ого|ый|ая))[^0-9]{0,80}(10|[1-9])(?:\s*/\s*10)?",
+        text,
+        flags=re.I,
+    )
+    current = rating_value(current_match.group(1) if current_match else None)
+    previous = rating_value(previous_match.group(1) if previous_match else None)
+    if current:
+        return f"{previous}->{current}/10" if previous else f"{current}/10"
+
+    ratings = [rating_value(match) for match in re.findall(r"\b(10|[1-9])\s*/\s*10\b", text)]
+    ratings = [rating for rating in ratings if rating]
+    if len(ratings) >= 2:
+        current, previous = ratings[0], ratings[1]
+        return f"{previous}->{current}/10"
+    if ratings:
+        return f"{ratings[0]}/10"
+    return None
+
+
+def strip_rating_prefix(thesis: str) -> str:
+    text = thesis.strip()
+    text = re.sub(
+        r"^(?:оценк[а-яё\s]*(?:месяца|периода)?\s*[:—-]\s*)?(?:10|[1-9])\s*/\s*10\s*[.;,:—-]*\s*",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+    text = re.sub(
+        r"^(?:оценк[а-яё\s]*(?:этого|текущего|предыдущего|прошлого)[^.;:]*[:—-]?\s*(?:10|[1-9])(?:\s*/\s*10)?[.;,:—-]*\s*)+",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+    return text
+
+
 def parse_update_metadata(markdown: str) -> dict[str, str]:
     metadata: dict[str, str] = {}
     header = markdown.split("\n## ", 1)[0]
@@ -2453,13 +2517,19 @@ def brief_question_label(prompt: str) -> str:
 
 def item_answer_html(item: dict[str, str]) -> str:
     theses = split_answer_theses(item["answer"])
-    label = markdown_inline_to_html(brief_question_label(item["prompt"]))
+    raw_label = brief_question_label(item["prompt"])
+    label = markdown_inline_to_html(raw_label)
     if not theses:
         return ""
-    if len(theses) == 1:
-        return f'<div class="qa"><h3>{label}</h3><p>{markdown_inline_to_html(theses[0])}</p></div>'
-    bullets = "".join(f"<li>{markdown_inline_to_html(thesis)}</li>" for thesis in theses)
-    return f'<div class="qa"><h3>{label}</h3><ul class="theses">{bullets}</ul></div>'
+    bullets: list[str] = []
+    if raw_label == "Оценка месяца":
+        if rating_summary := extract_rating_summary(item["answer"]):
+            bullets.append(f"<li><strong>{label}:</strong> {markdown_inline_to_html(rating_summary)}</li>")
+        theses = [cleaned for thesis in theses if (cleaned := strip_rating_prefix(thesis))]
+    bullets.extend(f"<li><strong>{label}:</strong> {markdown_inline_to_html(thesis)}</li>" for thesis in theses)
+    if not bullets:
+        return ""
+    return f'<div class="qa"><ul class="theses">{"".join(bullets)}</ul></div>'
 
 
 def update_markdown_to_brief_html_body(markdown: str) -> tuple[str, list[str]]:
@@ -2527,11 +2597,11 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
         ":root{color-scheme:light dark;}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
         "font-size:17px;line-height:1.55;background:#f7f7f4;color:#1f2328;}main{max-width:760px;margin:0 auto;"
         "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
-        "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}h3{font-size:18px;"
-        "margin:24px 0 8px;}p{margin:8px 0 16px;}ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
+        "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}p{margin:8px 0 16px;}"
+        "ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
         ".subtitle{color:#62666d;margin-top:-10px;}.meta{list-style:none;padding:12px 14px;margin:18px 0 24px;"
-        "background:rgba(184,137,66,.10);border-left:4px solid #b88942;}.qa{margin:16px 0 22px;}.qa h3{font-size:17px;"
-        "margin:0 0 6px;}.theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
+        "background:rgba(184,137,66,.10);border-left:4px solid #b88942;}.qa{margin:12px 0 18px;}"
+        ".theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
         "@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}h2{border-color:#333;}"
         ".meta{background:rgba(184,137,66,.16);}.subtitle,em{color:#b8b8b8;}}\n"
         "</style>\n"

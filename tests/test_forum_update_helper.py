@@ -532,8 +532,14 @@ def test_markdown_to_readable_html_has_charset_and_formatting():
     assert "Короткая версия для чтения на форуме" in html
     assert "<strong>Дата заполнения:</strong> 2026-05-31 14:20" in html
     assert "<h2>Раздел</h2>" in html
-    assert "<h3>Вопрос</h3>" in html
-    assert "<p>пункт</p>" in html
+    assert "<h3>Вопрос</h3>" not in html
+    assert "<li><strong>Вопрос:</strong> пункт</li>" in html
+
+
+def test_extract_rating_summary_compacts_current_and_previous_month():
+    assert bot.extract_rating_summary("Оценка этого месяца: 8/10. Оценка предыдущего месяца: 6/10.") == "6->8/10"
+    assert bot.extract_rating_summary("6->8/10, стало спокойнее") == "6->8/10"
+    assert bot.extract_rating_summary("8/10. Стало спокойнее.") == "8/10"
 
 
 def test_markdown_to_readable_html_keeps_spheres_and_short_question_labels():
@@ -548,7 +554,7 @@ def test_markdown_to_readable_html_keeps_spheres_and_short_question_labels():
         "- оценку этого месяца;\n"
         "- оценку предыдущего месяца;\n"
         "- что изменилось.**\n\n"
-        "8/10. Стало спокойнее.\n\n"
+        "Оценка этого месяца: 8/10. Оценка предыдущего месяца: 6/10. Стало спокойнее.\n\n"
         "- Запустил новый процесс\n"
         "- Договорился с партнёром\n\n"
         "**Я: собери ретроспективу периода.\n\n"
@@ -561,12 +567,12 @@ def test_markdown_to_readable_html_keeps_spheres_and_short_question_labels():
 
     assert "<h2>Я</h2>" in html
     assert "<h2>Моё дело</h2>" in html
-    assert "<h3>Оценка месяца</h3>" in html
-    assert "<h3>Как было / что получилось</h3>" in html
-    assert "<li>8/10. Стало спокойнее.</li>" in html
-    assert "<li>Запустил новый процесс</li>" in html
-    assert "<li>Договорился с партнёром</li>" in html
-    assert "Планировал восстановиться. Получил больше энергии." in html
+    assert "<h3>Оценка месяца</h3>" not in html
+    assert "<li><strong>Оценка месяца:</strong> 6-&gt;8/10</li>" in html
+    assert "<li><strong>Оценка месяца:</strong> Стало спокойнее.</li>" in html
+    assert "<li><strong>Оценка месяца:</strong> Запустил новый процесс</li>" in html
+    assert "<li><strong>Оценка месяца:</strong> Договорился с партнёром</li>" in html
+    assert "<li><strong>Как было / что получилось:</strong> Планировал восстановиться. Получил больше энергии.</li>" in html
     assert "Дата форума" in html
     assert "2026-05-31 14:20" in html
     assert "**Моё дело" not in html
