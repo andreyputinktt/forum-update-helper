@@ -442,7 +442,8 @@ def test_updates_menu_has_update_actions_and_profile_has_delete():
     assert "Начать новый апдейт" in update_labels
     assert "Редактировать апдейт от 26.04.2026" in update_labels
     assert "Список моих апдейтов" in update_labels
-    assert "Скачать апдейт" in update_labels
+    assert "Скачать .md для ИИ" in update_labels
+    assert "Открыть для чтения (HTML)" in update_labels
     assert "Пообщаться по динамике апдейтов" in update_labels
     assert "Удалить мои данные" in profile_labels
     assert "Скачать апдейт" not in profile_labels
@@ -463,6 +464,32 @@ def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):
 
     assert files[0].name == "newer.md"
     assert {path.name for path in files} == {"older.md", "newer.md"}
+
+
+def test_markdown_download_bytes_include_utf8_bom_once():
+    payload = bot.markdown_bytes_for_download("\ufeff# Форум")
+
+    assert payload.startswith(bot.UTF8_BOM)
+    assert payload.count(bot.UTF8_BOM) == 1
+    assert payload.decode("utf-8-sig") == "# Форум"
+
+
+def test_markdown_file_migration_adds_bom_and_repairs_mojibake(tmp_path):
+    path = tmp_path / "update.md"
+    path.write_text("# Ð¤Ð¾Ñ€ÑƒÐ¼", encoding="utf-8")
+
+    assert bot.ensure_markdown_file_has_utf8_bom(path) is True
+    assert path.read_bytes().startswith(bot.UTF8_BOM)
+    assert bot.read_markdown_file_text(path) == "# Форум"
+
+
+def test_markdown_to_readable_html_has_charset_and_formatting():
+    html = bot.markdown_to_readable_html("# Форум\n\n**Вопрос**\n\n- пункт", title="Апдейт")
+
+    assert '<meta charset="utf-8">' in html
+    assert "<h1>Форум</h1>" in html
+    assert "<strong>Вопрос</strong>" in html
+    assert "<li>пункт</li>" in html
 
 
 def test_forum_guide_context_loads_materials():

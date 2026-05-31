@@ -56,6 +56,7 @@ PRE_FORUM_REMINDER_DAYS = tuple(
     int(x.strip()) for x in os.getenv("PRE_FORUM_REMINDER_DAYS", "3").split(",") if x.strip()
 )
 TELEGRAM_TEXT_LIMIT = int(os.getenv("TELEGRAM_TEXT_LIMIT", "3900"))
+UTF8_BOM = b"\xef\xbb\xbf"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
@@ -817,7 +818,8 @@ def updates_menu_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("Начать новый апдейт", callback_data="update:new")],
             [InlineKeyboardButton(latest_update_label(user), callback_data="update:edit")],
             [InlineKeyboardButton("Список моих апдейтов", callback_data="updates:list")],
-            [InlineKeyboardButton("Скачать апдейт", callback_data="profile:download_files")],
+            [InlineKeyboardButton("Скачать .md для ИИ", callback_data="profile:download_files")],
+            [InlineKeyboardButton("Открыть для чтения (HTML)", callback_data="updates:read")],
             [InlineKeyboardButton("Пообщаться по динамике апдейтов", callback_data="updates:chat")],
             [InlineKeyboardButton("Назад", callback_data="menu:root")],
         ]
@@ -1001,6 +1003,10 @@ MENU_TEXT_ACTIONS = {
     "изменить предыдущий": "updates.edit",
     "список моих апдейтов": "updates.list",
     "скачать апдейт": "updates.download",
+    "скачать .md для ии": "updates.download",
+    "читать апдейт": "updates.read",
+    "открыть апдейт для чтения": "updates.read",
+    "открыть для чтения (html)": "updates.read",
     "пообщаться по динамике апдейтов": "updates.chat",
     "моя форум-группа": "forum_group.menu",
     "дата следующего форума": "forum_group.date",
@@ -1030,6 +1036,7 @@ MENU_CALLBACK_ACTIONS = {
     "updates:menu": "updates.menu",
     "updates:list": "updates.list",
     "updates:chat": "updates.chat",
+    "updates:read": "updates.read",
     "menu:update": "updates.start",
     "update:new": "updates.new",
     "update:edit": "updates.edit",
@@ -1202,6 +1209,9 @@ async def run_menu_action(
         return
     if action == "updates.download":
         await send_saved_update_files(update, fresh)
+        return
+    if action == "updates.read":
+        await send_readable_update_file(update, fresh)
         return
     if action == "updates.chat":
         await start_updates_chat(update, fresh)
@@ -2135,52 +2145,256 @@ def saved_update_files(user: dict[str, Any]) -> list[Path]:
     return sorted(user_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
-async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
+def looks_like_utf8_mojibake(text: str) -> bool:
+    markers = sum(text.count(marker) for marker in ("Ð", "Ñ", "Â", "â", "�"))
+    cyrillic = len(re.findall(r"[А-Яа-яЁё]", text))
+    return markers >= 5 and markers > cyrillic
+
+
+def repair_utf8_mojibake(text: str) -> str:
+    if not looks_like_utf8_mojibake(text):
+        return text
+    best = text
+    best_score = sum(best.count(marker) for marker in ("Ð", "Ñ", "Â", "â", "�"))
+    for encoding in ("latin1", "cp1252"):
+        try:
+            candidate = text.encode(encoding).decode("utf-8")
+        except UnicodeError:
+            continue
+        score = sum(candidate.count(marker) for marker in ("Ð", "Ñ", "Â", "â", "�"))
+        if score < best_score and re.search(r"[А-Яа-яЁё]", candidate):
+            best = candidate
+            best_score = score
+    return best
+
+
+def decode_markdown_bytes(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def markdown_bytes_for_download(markdown: str) -> bytes:
+    text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+    return UTF8_BOM + text.encode("utf-8")
+
+
+def ensure_markdown_file_has_utf8_bom(path: Path) -> bool:
+    try:
+        original = path.read_bytes()
+    except OSError as exc:
+        log.warning("cannot read markdown file for encoding migration path=%s error=%s", path, exc)
+        return False
+    text = repair_utf8_mojibake(decode_markdown_bytes(original))
+    normalized = markdown_bytes_for_download(text)
+    if original == normalized:
+        return False
+    try:
+        path.write_bytes(normalized)
+    except OSError as exc:
+        log.warning("cannot migrate markdown file to utf-8 bom path=%s error=%s", path, exc)
+        return False
+    return True
+
+
+def read_markdown_file_text(path: Path) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    text = repair_utf8_mojibake(decode_markdown_bytes(data)).strip()
+    ensure_markdown_file_has_utf8_bom(path)
+    return text
+
+
+def migrate_saved_update_markdown_files() -> int:
+    if not UPDATES_DIR.exists():
+        return 0
+    migrated = 0
+    for path in UPDATES_DIR.rglob("*.md"):
+        if ensure_markdown_file_has_utf8_bom(path):
+            migrated += 1
+    return migrated
+
+
+def latest_update_markdown(user: dict[str, Any]) -> tuple[str, str] | None:
     files = saved_update_files(user)
-    if not files:
-        markdown = str(user.get("last_update_markdown") or "").strip()
-        if markdown and update.effective_message and update.effective_chat:
-            filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
-            tmp = tempfile.NamedTemporaryFile(prefix="forum-update-", suffix=".md", delete=False)
-            tmp_path = Path(tmp.name)
-            try:
-                tmp.write(markdown.encode("utf-8"))
-                tmp.close()
-                with tmp_path.open("rb") as fh:
-                    await spaced_bot_send(
-                        update.effective_chat.id,
-                        lambda: update.effective_message.reply_document(
-                            document=fh,
-                            filename=filename,
-                            caption="Форумный апдейт в .md — можно передать ИИ.",
-                        ),
-                    )
-            finally:
-                tmp_path.unlink(missing_ok=True)
-            return
+    if files:
+        text = read_markdown_file_text(files[0])
+        if text:
+            return text, files[0].name
+    markdown = str(user.get("last_update_markdown") or "").strip()
+    if markdown:
+        filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
+        return repair_utf8_mojibake(markdown), str(filename)
+    return None
+
+
+async def send_temp_document(
+    update: Update,
+    payload: bytes,
+    *,
+    filename: str,
+    suffix: str,
+    caption: str,
+) -> None:
+    if update.effective_message is None or update.effective_chat is None:
+        return
+    tmp = tempfile.NamedTemporaryFile(prefix="forum-update-", suffix=suffix, delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        tmp.write(payload)
+        tmp.close()
+        with tmp_path.open("rb") as fh:
+            await spaced_bot_send(
+                update.effective_chat.id,
+                lambda: update.effective_message.reply_document(
+                    document=fh,
+                    filename=filename,
+                    caption=caption,
+                ),
+            )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def markdown_inline_to_html(text: str) -> str:
+    escaped = html.escape(text, quote=False)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)_(.+?)_(?!_)", r"<em>\1</em>", escaped)
+    return escaped
+
+
+def markdown_to_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
+    text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+    document_title = html.escape(title, quote=True)
+    body: list[str] = []
+    paragraph: list[str] = []
+    in_ul = False
+    in_ol = False
+
+    def close_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            body.append(f"<p>{'<br>'.join(paragraph)}</p>")
+            paragraph = []
+
+    def close_lists() -> None:
+        nonlocal in_ul, in_ol
+        if in_ul:
+            body.append("</ul>")
+            in_ul = False
+        if in_ol:
+            body.append("</ol>")
+            in_ol = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            close_paragraph()
+            close_lists()
+            continue
+        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+        if heading:
+            close_paragraph()
+            close_lists()
+            level = len(heading.group(1))
+            body.append(f"<h{level}>{markdown_inline_to_html(heading.group(2))}</h{level}>")
+            continue
+        if stripped.startswith("- "):
+            close_paragraph()
+            if in_ol:
+                body.append("</ol>")
+                in_ol = False
+            if not in_ul:
+                body.append("<ul>")
+                in_ul = True
+            body.append(f"<li>{markdown_inline_to_html(stripped[2:].strip())}</li>")
+            continue
+        numbered = re.match(r"^\d+\.\s+(.+)$", stripped)
+        if numbered:
+            close_paragraph()
+            if in_ul:
+                body.append("</ul>")
+                in_ul = False
+            if not in_ol:
+                body.append("<ol>")
+                in_ol = True
+            body.append(f"<li>{markdown_inline_to_html(numbered.group(1).strip())}</li>")
+            continue
+        close_lists()
+        paragraph.append(markdown_inline_to_html(stripped))
+    close_paragraph()
+    close_lists()
+
+    return (
+        "<!doctype html>\n"
+        '<html lang="ru">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{document_title}</title>\n"
+        "<style>\n"
+        ":root{color-scheme:light dark;}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "font-size:17px;line-height:1.55;background:#f7f7f4;color:#1f2328;}main{max-width:760px;margin:0 auto;"
+        "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
+        "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}h3{font-size:18px;"
+        "margin:24px 0 8px;}p{margin:10px 0 18px;}ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
+        "strong{font-weight:700;}em{color:#62666d;}@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}"
+        "h2{border-color:#333;}em{color:#b8b8b8;}}\n"
+        "</style>\n"
+        "</head>\n"
+        f"<body><main>{''.join(body)}</main></body>\n"
+        "</html>\n"
+    )
+
+
+async def send_saved_update_files(update: Update, user: dict[str, Any]) -> None:
+    latest = latest_update_markdown(user)
+    if latest is None:
         await reply(
             update,
             "Сохранённых .md апдейтов пока нет. Сначала подготовь апдейт.",
             reply_markup=updates_menu_keyboard(user),
         )
         return
-    if update.effective_message is None or update.effective_chat is None:
-        return
-    path = files[0]
-    with path.open("rb") as fh:
-        await spaced_bot_send(
-            update.effective_chat.id,
-            lambda path=path, fh=fh: update.effective_message.reply_document(
-                document=fh,
-                filename=path.name,
-                caption="Форумный апдейт в .md — можно передать ИИ.",
-            ),
+    markdown, filename = latest
+    await send_temp_document(
+        update,
+        markdown_bytes_for_download(markdown),
+        filename=filename,
+        suffix=".md",
+        caption="Форумный апдейт в .md для ИИ. Файл сохранён в UTF-8, чтобы iPhone корректно показывал русский текст.",
+    )
+
+
+async def send_readable_update_file(update: Update, user: dict[str, Any]) -> None:
+    latest = latest_update_markdown(user)
+    if latest is None:
+        await reply(
+            update,
+            "Сохранённых апдейтов пока нет. Сначала подготовь апдейт.",
+            reply_markup=updates_menu_keyboard(user),
         )
+        return
+    markdown, filename = latest
+    html_filename = Path(filename).with_suffix(".html").name
+    readable = markdown_to_readable_html(markdown, title=Path(filename).stem)
+    await send_temp_document(
+        update,
+        readable.encode("utf-8"),
+        filename=html_filename,
+        suffix=".html",
+        caption="HTML-версия апдейта для чтения: открывается с форматированием на телефоне и компьютере.",
+    )
 
 
 def update_history_context(user: dict[str, Any], max_chars: int = 22000) -> str:
     chunks: list[str] = []
-    latest = str(user.get("last_update_markdown") or "").strip()
+    latest = repair_utf8_mojibake(str(user.get("last_update_markdown") or "").strip())
     if latest:
         title = user.get("last_update_filename") or "последний апдейт"
         chunks.append(f"# {title}\n\n{latest}")
@@ -2188,7 +2402,7 @@ def update_history_context(user: dict[str, Any], max_chars: int = 22000) -> str:
         if sum(len(chunk) for chunk in chunks) >= max_chars:
             break
         try:
-            text = path.read_text(encoding="utf-8").strip()
+            text = read_markdown_file_text(path)
         except OSError:
             continue
         if text and text not in latest:
@@ -2809,8 +3023,8 @@ async def send_ai_forum_standard_file(update: Update, user: dict[str, Any]) -> N
     filename = f"forum-standard-for-ai-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
     temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
-            fh.write(content)
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as fh:
+            fh.write(markdown_bytes_for_download(content))
             temp_path = Path(fh.name)
         with temp_path.open("rb") as fh:
             await spaced_bot_send(
@@ -2901,7 +3115,7 @@ async def finish_update_flow(
         last_update_at=now_iso(),
     )
     path = user_dir / filename
-    path.write_text(content, encoding="utf-8")
+    path.write_bytes(markdown_bytes_for_download(content))
     if update.effective_message and update.effective_chat:
         with path.open("rb") as fh:
             await spaced_bot_send(
@@ -3290,6 +3504,9 @@ async def diary_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def post_init(application: Application) -> None:
+    migrated = migrate_saved_update_markdown_files()
+    if migrated:
+        log.info("migrated saved markdown updates to utf-8 bom count=%s", migrated)
     maintenance_time = parse_time(DAILY_MAINTENANCE_TIME)
     post_forum_plan_time = time_minus_minutes(maintenance_time, 30)
     application.job_queue.run_daily(
