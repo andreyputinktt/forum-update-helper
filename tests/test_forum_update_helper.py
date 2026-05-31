@@ -470,13 +470,15 @@ def test_update_item_line_uses_deeplinks_for_actions():
         {"selector": "0", "filename": "forum-update.md", "date": "31.05.2026"},
     )
 
-    assert "1. <b>31.05.2026</b> — forum-update.md" in line
+    assert line.startswith("<b>31.05.2026</b>\n - Скачать:")
+    assert "forum-update.md" not in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_md_0"' in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_html_0"' in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_edit_0"' in line
-    assert "скачать .md" in line
-    assert "скачать .html" in line
-    assert "редактировать" in line
+    assert "Скачать:" in line
+    assert "[.md]" in line
+    assert "[.html]" in line
+    assert "Редактировать" in line
 
 
 def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):

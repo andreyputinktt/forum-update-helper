@@ -2205,10 +2205,10 @@ def update_action_deeplink(action: str, selector: str) -> str:
 def update_item_line(index: int, item: dict[str, Any]) -> str:
     selector = str(item["selector"])
     return (
-        f"{index}. <b>{esc(item['date'])}</b> — {esc(item['filename'])}\n"
-        f'<a href="{update_action_deeplink("md", selector)}">скачать .md</a> · '
-        f'<a href="{update_action_deeplink("html", selector)}">скачать .html</a> · '
-        f'<a href="{update_action_deeplink("edit", selector)}">редактировать</a>'
+        f"<b>{esc(item['date'])}</b>\n"
+        f' - Скачать: <a href="{update_action_deeplink("md", selector)}">[.md]</a> '
+        f'<a href="{update_action_deeplink("html", selector)}">[.html]</a>\n'
+        f' - <a href="{update_action_deeplink("edit", selector)}">Редактировать</a>'
     )
 
 
