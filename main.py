@@ -2202,8 +2202,8 @@ def update_item_line(index: int, item: dict[str, Any]) -> str:
     selector = str(item["selector"])
     return (
         f"<b>{esc(item['date'])}</b>\n"
-        f' - Скачать: <a href="{update_action_deeplink("md", selector)}">[.md]</a> '
-        f'<a href="{update_action_deeplink("html", selector)}">[.html]</a>\n'
+        f' - Скачать: <a href="{update_action_deeplink("md", selector)}">[.md]</a> (полная, для ИИ) '
+        f'<a href="{update_action_deeplink("html", selector)}">[.html]</a> (короткая, для чтения)\n'
         f' - <a href="{update_action_deeplink("edit", selector)}">Редактировать</a>'
     )
 
@@ -2344,93 +2344,67 @@ def markdown_inline_to_html(text: str) -> str:
     return escaped
 
 
-def markdown_to_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
+def shorten_thesis(text: str, max_chars: int = 520) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3].rstrip(" ,.;:") + "..."
+
+
+def split_answer_theses(answer: str) -> list[str]:
+    clean = str(answer or "").strip()
+    if not clean or clean == "_Нет ответа_":
+        return []
+    theses: list[str] = []
+    for block in re.split(r"\n\s*\n", clean):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if all(re.match(r"^[-•]\s+", line) for line in lines):
+            theses.extend(re.sub(r"^[-•]\s+", "", line).strip() for line in lines)
+        else:
+            theses.append(" ".join(lines))
+    return [shorten_thesis(thesis) for thesis in theses if thesis.strip() and thesis.strip() != "_Нет ответа_"]
+
+
+def update_section_theses(section_content: str) -> list[str]:
+    theses: list[str] = []
+    answer_matches = list(
+        re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", section_content, flags=re.S)
+    )
+    if answer_matches:
+        for match in answer_matches:
+            theses.extend(split_answer_theses(match.group(2)))
+        return theses
+    plain = re.sub(r"^\s*[-#].*$", "", section_content, flags=re.M).strip()
+    return split_answer_theses(plain)
+
+
+def update_markdown_to_brief_html_body(markdown: str) -> tuple[str, list[str]]:
     text = repair_utf8_mojibake(str(markdown or "").lstrip("\ufeff"))
+    title_match = re.search(r"^#\s+(.+)$", text, flags=re.M)
+    title = title_match.group(1).strip() if title_match else "Форумный апдейт"
+    body = [
+        f"<h1>{markdown_inline_to_html(title)}</h1>",
+        '<p class="subtitle">Короткая версия для чтения на форуме</p>',
+    ]
+    for section in re.finditer(r"^##\s+(.+?)\s*$\n(.*?)(?=^##\s+|\Z)", text, flags=re.M | re.S):
+        section_title = section.group(1).strip()
+        theses = update_section_theses(section.group(2))
+        if not theses:
+            continue
+        body.append(f"<h2>{markdown_inline_to_html(section_title)}</h2>")
+        body.append('<ul class="theses">')
+        body.extend(f"<li>{markdown_inline_to_html(thesis)}</li>" for thesis in theses)
+        body.append("</ul>")
+    if len(body) == 2:
+        body.append("<p>В апдейте пока нет заполненных тезисов.</p>")
+    return title, body
+
+
+def markdown_to_readable_html(markdown: str, title: str = "Форумный апдейт") -> str:
     document_title = html.escape(title, quote=True)
-    body: list[str] = []
-    paragraph: list[str] = []
-    in_ul = False
-    in_ol = False
-
-    def close_paragraph() -> None:
-        nonlocal paragraph
-        if paragraph:
-            body.append(f"<p>{'<br>'.join(paragraph)}</p>")
-            paragraph = []
-
-    def close_lists() -> None:
-        nonlocal in_ul, in_ol
-        if in_ul:
-            body.append("</ul>")
-            in_ul = False
-        if in_ol:
-            body.append("</ol>")
-            in_ol = False
-
-    lines = text.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        stripped = line.strip()
-        if not stripped:
-            close_paragraph()
-            close_lists()
-            index += 1
-            continue
-        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
-        if heading:
-            close_paragraph()
-            close_lists()
-            level = len(heading.group(1))
-            body.append(f"<h{level}>{markdown_inline_to_html(heading.group(2))}</h{level}>")
-            index += 1
-            continue
-        if stripped.startswith("**"):
-            strong_lines = [stripped[2:]]
-            while not strong_lines[-1].rstrip().endswith("**") and index + 1 < len(lines):
-                index += 1
-                strong_lines.append(lines[index].strip())
-            if strong_lines[-1].rstrip().endswith("**"):
-                strong_lines[-1] = re.sub(r"\*\*\s*$", "", strong_lines[-1].rstrip())
-                strong_content = "<br>".join(
-                    markdown_inline_to_html(item) for item in strong_lines if item.strip()
-                )
-                close_paragraph()
-                close_lists()
-                body.append(f'<p class="question"><strong>{strong_content}</strong></p>')
-                index += 1
-                continue
-            paragraph.append(markdown_inline_to_html(stripped))
-            index += 1
-            continue
-        if stripped.startswith("- "):
-            close_paragraph()
-            if in_ol:
-                body.append("</ol>")
-                in_ol = False
-            if not in_ul:
-                body.append("<ul>")
-                in_ul = True
-            body.append(f"<li>{markdown_inline_to_html(stripped[2:].strip())}</li>")
-            index += 1
-            continue
-        numbered = re.match(r"^\d+\.\s+(.+)$", stripped)
-        if numbered:
-            close_paragraph()
-            if in_ul:
-                body.append("</ul>")
-                in_ul = False
-            if not in_ol:
-                body.append("<ol>")
-                in_ol = True
-            body.append(f"<li>{markdown_inline_to_html(numbered.group(1).strip())}</li>")
-            index += 1
-            continue
-        close_lists()
-        paragraph.append(markdown_inline_to_html(stripped))
-        index += 1
-    close_paragraph()
-    close_lists()
+    _update_title, body = update_markdown_to_brief_html_body(markdown)
 
     return (
         "<!doctype html>\n"
@@ -2445,9 +2419,9 @@ def markdown_to_readable_html(markdown: str, title: str = "Форумный ап
         "padding:28px 18px 52px;}h1{font-size:28px;line-height:1.18;margin:0 0 22px;}h2{font-size:22px;"
         "line-height:1.25;margin:34px 0 12px;padding-top:16px;border-top:1px solid #ddd8ce;}h3{font-size:18px;"
         "margin:24px 0 8px;}p{margin:10px 0 18px;}ul,ol{padding-left:24px;margin:8px 0 18px;}li{margin:6px 0;}"
-        ".question{margin:18px 0 10px;padding:10px 12px;border-left:4px solid #b88942;background:rgba(184,137,66,.10);}"
-        "strong{font-weight:700;}em{color:#62666d;}@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}"
-        "h2{border-color:#333;}.question{background:rgba(184,137,66,.16);}em{color:#b8b8b8;}}\n"
+        ".subtitle{color:#62666d;margin-top:-10px;}.theses{padding-left:22px;}strong{font-weight:700;}em{color:#62666d;}"
+        "@media(prefers-color-scheme:dark){body{background:#111;color:#eee;}h2{border-color:#333;}"
+        ".subtitle,em{color:#b8b8b8;}}\n"
         "</style>\n"
         "</head>\n"
         f"<body><main>{''.join(body)}</main></body>\n"

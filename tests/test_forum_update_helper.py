@@ -485,7 +485,9 @@ def test_update_item_line_uses_deeplinks_for_actions():
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_edit_0"' in line
     assert "Скачать:" in line
     assert "[.md]" in line
+    assert "(полная, для ИИ)" in line
     assert "[.html]" in line
+    assert "(короткая, для чтения)" in line
     assert "Редактировать" in line
 
 
@@ -523,28 +525,34 @@ def test_markdown_file_migration_adds_bom_and_repairs_mojibake(tmp_path):
 
 
 def test_markdown_to_readable_html_has_charset_and_formatting():
-    html = bot.markdown_to_readable_html("# Форум\n\n**Вопрос**\n\n- пункт", title="Апдейт")
+    html = bot.markdown_to_readable_html("# Форум\n\n## Раздел\n\n**Вопрос**\n\n- пункт", title="Апдейт")
 
     assert '<meta charset="utf-8">' in html
     assert "<h1>Форум</h1>" in html
-    assert "<strong>Вопрос</strong>" in html
+    assert "Короткая версия для чтения на форуме" in html
+    assert "<h2>Раздел</h2>" in html
     assert "<li>пункт</li>" in html
+    assert "Вопрос" not in html
 
 
-def test_markdown_to_readable_html_handles_multiline_bold_questions():
+def test_markdown_to_readable_html_keeps_only_theses_from_multiline_bold_questions():
     markdown = (
         "## Часть 1. Оценка трёх сфер\n\n"
         "**Моё дело: дай оценку месяца:\n"
         "- оценку этого месяца;\n"
         "- оценку предыдущего месяца;\n"
         "- что изменилось.**\n\n"
-        "Ответ"
+        "8/10. Стало спокойнее.\n\n"
+        "- Запустил новый процесс\n"
+        "- Договорился с партнёром"
     )
 
     html = bot.markdown_to_readable_html(markdown)
 
-    assert '<p class="question"><strong>Моё дело: дай оценку месяца:<br>- оценку этого месяца;' in html
-    assert "- что изменилось.</strong></p>" in html
+    assert "Моё дело: дай оценку месяца" not in html
+    assert "<li>8/10. Стало спокойнее.</li>" in html
+    assert "<li>Запустил новый процесс</li>" in html
+    assert "<li>Договорился с партнёром</li>" in html
     assert "**Моё дело" not in html
 
 
