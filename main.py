@@ -116,6 +116,8 @@ PSYCHOLOGIST_URL = "https://all.achernigova.ru/p/recommendediarpt/"
 COACH_URL = "https://5prism.ru/kouchi/"
 REPO_URL = "https://github.com/andreyputinktt/forum-update-helper"
 BUILD_BOT_DOC_URL = "https://github.com/andreyputinktt/forum-update-helper/blob/main/CREATE_OWN_BOT.md"
+UPDATE_MD_CAPTION = "Форумный апдейт в .md для ИИ."
+UPDATE_HTML_CAPTION = "Форумный апдейт в .html для чтения на форуме."
 AUTHOR_TEXT = (
     "Автор бота: Андрей Путин.\n"
     "Telegram: @utandr\n\n"
@@ -784,15 +786,11 @@ def onboarding_finished_keyboard() -> InlineKeyboardMarkup:
 def info_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton("О боте", callback_data="menu:about"),
-                InlineKeyboardButton("Связаться с автором", callback_data="menu:author"),
-            ],
+            [InlineKeyboardButton("О боте", callback_data="menu:about")],
             [
                 InlineKeyboardButton("Ищу психолога", url=PSYCHOLOGIST_URL),
                 InlineKeyboardButton("Ищу ментора", url=COACH_URL),
             ],
-            [InlineKeyboardButton("Сделать собственный бот", url=BUILD_BOT_DOC_URL)],
             [InlineKeyboardButton("Назад в меню", callback_data="menu:root")],
         ]
     )
@@ -1348,26 +1346,24 @@ async def send_about(update: Update) -> None:
     await reply(
         update,
         "<b>О боте</b>\n\n"
-        "Я готовлю форумный апдейт в форматах «Классическая (YPO)» и "
-        "«С личной стратегией (X-Competence)»: "
-        "провожу по вопросам, собираю файл и помогаю свериться со справочником форума.\n\n"
-        "Что умею:\n"
-        "• спрашивать дату следующего форума при старте;\n"
-        "• за 3 дня до форума начинать подготовку с первого вопроса апдейта;\n"
-        "• спрашивать дату следующего форума и использовать её для напоминаний;\n"
-        "• проводить весь апдейт вопрос за вопросом с кнопкой ➡️;\n"
-        "• выгружать сохранённые апдейты в формате .md, чтобы их было удобно дать ИИ;\n"
-        "• выгружать единый MD-файл стандарта форума с инструкцией для ИИ-агента;\n"
-        "• отвечать на вопросы по сохранённым материалам форума;\n"
-        "• принимать голосовые ответы и показывать транскрипт;\n"
-        "• работать в режиме дневника и давать обратную связь по твоему prompt;\n"
-        "• на следующее утро после форума спрашивать здоровье группы;\n"
-        "• раз в три месяца напоминать о личной стратегической сессии в отеле;\n"
-        "• удалить твои данные с сервера по кнопке.\n\n"
-        "Бот совместим с ИИ-агентами: все ключевые выгрузки можно получить "
-        "как Markdown-файлы и передать во внешний AI-workflow.\n\n"
+        "Я помогаю готовить форумный апдейт в форматах «Классическая (YPO)» "
+        "и «С личной стратегией (X-Competence)»: веду по вопросам, принимаю "
+        "текст и голос, собираю .md для ИИ и .html для чтения на форуме.\n\n"
+        "Ещё я напоминаю о форуме, помогаю вести дневник, храню историю апдейтов, "
+        "показываю динамику, отвечаю по справочнику форума и после встречи могу "
+        "собрать здоровье форум-группы.\n\n"
+        "<b>Данные</b>\n"
+        "Профиль, даты, ответы, дневник и файлы хранятся на сервере бота. "
+        "Голосовые сообщения не хранятся: после транскрибации они удаляются. "
+        "Свои данные можно удалить в «Личном кабинете».\n\n"
+        "<b>Автор</b>\n"
+        "Андрей Путин, Telegram: @utandr. Бот развёрнут на сервере компании kt.team.\n\n"
+        "<b>Собственный бот</b>\n"
+        "Можно сделать свою копию, чтобы информация была доступна только вам. "
+        "Для этого понадобится всегда работающий компьютер или сервер, который "
+        "будет обслуживать бота.\n\n"
         f'<a href="{REPO_URL}">Репозиторий</a> · '
-        f'<a href="{BUILD_BOT_DOC_URL}">Сделать собственный бот</a>',
+        f'<a href="{BUILD_BOT_DOC_URL}">Инструкция для своего бота</a>',
         reply_markup=info_inline_keyboard(),
     )
 
@@ -2474,7 +2470,7 @@ async def send_saved_update_files(update: Update, user: dict[str, Any], source_s
         markdown_bytes_for_download(markdown),
         filename=filename,
         suffix=".md",
-        caption="Форумный апдейт в .md для ИИ. Файл сохранён в UTF-8, чтобы iPhone корректно показывал русский текст.",
+        caption=UPDATE_MD_CAPTION,
     )
 
 
@@ -2495,7 +2491,7 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
         readable.encode("utf-8"),
         filename=html_filename,
         suffix=".html",
-        caption="HTML-версия апдейта для чтения: открывается с форматированием на телефоне и компьютере.",
+        caption=UPDATE_HTML_CAPTION,
     )
 
 

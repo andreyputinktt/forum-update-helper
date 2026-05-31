@@ -339,8 +339,16 @@ def test_information_submenu_contains_info_actions():
     assert "О боте" in labels
     assert "Ищу психолога" in labels
     assert "Ищу ментора" in labels
-    assert "Связаться с автором" in labels
+    assert "Связаться с автором" not in labels
+    assert "Сделать собственный бот" not in labels
     assert "Назад в меню" in labels
+
+
+def test_update_file_captions_are_reader_facing():
+    assert bot.UPDATE_MD_CAPTION == "Форумный апдейт в .md для ИИ."
+    assert bot.UPDATE_HTML_CAPTION == "Форумный апдейт в .html для чтения на форуме."
+    assert "кодиров" not in bot.UPDATE_MD_CAPTION.casefold()
+    assert "iphone" not in bot.UPDATE_MD_CAPTION.casefold()
 
 
 def test_onboarding_existing_value_buttons():
