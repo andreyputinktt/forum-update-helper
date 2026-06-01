@@ -97,6 +97,45 @@ def test_append_answer_text_preserves_multiple_messages():
     assert bot.append_answer_text("первый фрагмент", "   ") == "первый фрагмент"
 
 
+def test_classic_rating_button_records_answer_and_advances(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    replies = []
+
+    async def fake_reply(_update, text, **kwargs):
+        replies.append((text, kwargs.get("reply_markup")))
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, methodology, active_flow, active_step,
+            flow_payload, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            123,
+            456,
+            "Классическая (YPO)",
+            "update",
+            0,
+            bot.json.dumps({"answers": {}}, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    test_store.conn.commit()
+
+    bot.asyncio.run(bot.handle_flow_rating(None, None, test_store.get_user(123), "8"))
+
+    user = test_store.get_user(123)
+    payload = test_store.payload(user)
+    assert payload["answers"]["classic_business_rating"] == "8/10"
+    assert user["active_step"] == 1
+    assert "Семья" in replies[-1][0]
+
+
 def test_flow_keeps_step_until_next_and_appends_messages(tmp_path, monkeypatch):
     test_store = bot.Store(tmp_path / "state.sqlite3")
     monkeypatch.setattr(bot, "store", test_store)
@@ -414,6 +453,23 @@ def test_classic_methodology_selects_classic_questions():
     assert bot.CLASSIC_UPDATE_QUESTIONS[0].prompt.startswith("Бизнес")
 
 
+def test_classic_questions_are_condensed():
+    questions = bot.CLASSIC_UPDATE_QUESTIONS
+    keys = [question.key for question in questions]
+
+    assert len(questions) == 13
+    assert keys[:3] == ["classic_business_rating", "classic_family_rating", "classic_personal_rating"]
+    assert not any(key.endswith("_event") or key.endswith("_importance") or key.endswith("_feelings") for key in keys)
+    business_plus = next(question for question in questions if question.key == "classic_Бизнес_plus")
+    assert "\n- самое важное" in business_plus.prompt
+    assert "\n- почему эта ситуация важна" in business_plus.prompt
+    assert "\n- какие чувства" in business_plus.prompt
+    assert "минимум три чувства" not in business_plus.prompt
+    assert "Какую тему, ситуацию или возможность" in next(
+        question for question in questions if question.key == "classic_presentation_topic"
+    ).prompt
+
+
 def test_strategy_methodology_selects_x_competence_questions():
     user = {"methodology": "С личной стратегией (X-Competence)"}
 
@@ -565,6 +621,18 @@ def test_flow_keyboard_uses_native_next_and_back_actions():
     assert labels == ["⬅️", "➡️"]
     assert callbacks == ["flow:back", "flow:next"]
     assert "Отменить сценарий" not in labels
+
+
+def test_classic_rating_keyboard_has_only_1_to_10_buttons():
+    question = bot.CLASSIC_UPDATE_QUESTIONS[0]
+    keyboard = bot.question_keyboard(question).inline_keyboard
+    labels = [button.text for row in keyboard for button in row]
+    callbacks = [button.callback_data for row in keyboard for button in row]
+
+    assert labels == [str(value) for value in range(1, 11)]
+    assert callbacks == [f"flow:rating:{value}" for value in range(1, 11)]
+    assert "⬅️" not in labels
+    assert "➡️" not in labels
 
 
 def test_update_start_keyboard_offers_new_or_edit():

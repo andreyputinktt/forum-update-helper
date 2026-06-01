@@ -277,32 +277,26 @@ CLASSIC_UPDATE_QUESTIONS = [
 
 for sphere in ("Бизнес", "Семья", "Личное"):
     for sign, label in (("plus", "плюс"), ("minus", "минус")):
-        CLASSIC_UPDATE_QUESTIONS.extend(
-            [
-                Question(
-                    f"classic_{sphere}_{sign}_event",
-                    f"{sphere}, {label}.\n\nСамое важное, что произошло. Одним предложением.",
-                    f"Классический Update. {sphere}",
-                ),
-                Question(
-                    f"classic_{sphere}_{sign}_importance",
-                    f"{sphere}, {label}.\n\nПочему эта ситуация важна для тебя?",
-                    f"Классический Update. {sphere}",
-                ),
-                Question(
-                    f"classic_{sphere}_{sign}_feelings",
-                    f"{sphere}, {label}.\n\nКакие чувства ты испытываешь? Укажи минимум три чувства.",
-                    f"Классический Update. {sphere}",
-                ),
-            ]
+        CLASSIC_UPDATE_QUESTIONS.append(
+            Question(
+                f"classic_{sphere}_{sign}",
+                f"{sphere}, {label}.\n\n"
+                f"Опиши главный {label} месяца.\n\n"
+                "Укажи:\n"
+                "- самое важное, что произошло — одним предложением;\n"
+                "- почему эта ситуация важна для тебя;\n"
+                "- какие чувства ты испытываешь.",
+                f"Классический Update. {sphere}",
+            )
         )
 
 CLASSIC_UPDATE_QUESTIONS.extend(
     [
         Question(
             "classic_presentation_topic",
-            "Если бы ты презентовал сегодня, что хотел бы обсудить с форумом?\n\n"
-            "Можно выбрать:\n"
+            "Какую тему, ситуацию или возможность ты хотел бы вынести на форум, "
+            "если бы сегодня была твоя презентация?\n\n"
+            "Можно выбрать тему из:\n"
             "- текущую ситуацию;\n"
             "- возможность;\n"
             "- тему в бизнесе, семье или личной жизни.",
@@ -1065,6 +1059,25 @@ def flow_keyboard(_show_next: bool = False) -> InlineKeyboardMarkup:
     )
 
 
+def rating_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(str(value), callback_data=f"flow:rating:{value}") for value in range(1, 6)],
+            [InlineKeyboardButton(str(value), callback_data=f"flow:rating:{value}") for value in range(6, 11)],
+        ]
+    )
+
+
+def uses_rating_buttons(question: Question) -> bool:
+    return question.key in {"classic_business_rating", "classic_family_rating", "classic_personal_rating"}
+
+
+def question_keyboard(question: Question) -> InlineKeyboardMarkup:
+    if uses_rating_buttons(question):
+        return rating_keyboard()
+    return flow_keyboard(False)
+
+
 MENU_TEXT_ACTIONS = {
     "апдейты": "updates.menu",
     "подготовить апдейт": "updates.start",
@@ -1248,7 +1261,8 @@ async def start_onboarding(update: Update, _context: ContextTypes.DEFAULT_TYPE, 
         "группы и раз в три месяца предложу личную стратегическую сессию "
         "вне города.\n\n"
         "Ещё я могу помочь вести дневник, чтобы апдейт получился глубже, "
-        "а жизнь — более осознанной, насыщенной и особенной.\n\n"
+        "а жизнь — более насыщенной. Могу комментировать события дневника "
+        "в любом разрезе: твои паттерны или любой другой prompt.\n\n"
         "Бот совместим с ИИ-агентами: материалы и апдейты можно выгружать "
         "в MD-файлах. Можно отвечать текстом или голосом. Голос я транскрибирую "
         f"и покажу текст.\n\n<a href=\"{ABOUT_DEEPLINK}\">Подробно о боте</a>"
@@ -1462,7 +1476,8 @@ async def send_about(update: Update) -> None:
         "текст и голос, собираю .md для ИИ и .html для чтения на форуме.\n\n"
         "Ещё я напоминаю о форуме, помогаю вести дневник, храню историю апдейтов, "
         "показываю динамику, отвечаю по справочнику форума и после встречи могу "
-        "собрать здоровье форум-группы.\n\n"
+        "собрать здоровье форум-группы. Дневник можно комментировать в любом "
+        "разрезе: твои паттерны или любой другой prompt.\n\n"
         "<b>Данные</b>\n"
         "Профиль, даты, ответы, дневник и файлы хранятся на сервере бота. "
         "Голосовые сообщения не хранятся: после транскрибации они удаляются. "
@@ -1649,6 +1664,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_flow_next(update, context, user)
     elif data == "flow:back":
         await handle_flow_back(update, user)
+    elif data.startswith("flow:rating:"):
+        await handle_flow_rating(update, context, user, data.rsplit(":", 1)[1])
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2700,7 +2717,7 @@ def brief_question_label(prompt: str) -> str:
         return "5% радостного"
     if "5% самых тяжёлых" in lowered:
         return "5% тяжёлого"
-    if "если бы ты презентовал" in lowered:
+    if "если бы ты презентовал" in lowered or "какую тему" in lowered:
         return "Тема для форума"
     if "над чем ты хотел бы поработать" in lowered:
         return "Главный вопрос к форуму"
@@ -3442,8 +3459,9 @@ async def begin_update_flow(
         update,
         f"<b>{'Изменяем предыдущий апдейт' if mode == 'edit' else 'Начинаем новый апдейт'}: {esc(methodology)}</b>\n\n"
         "Будем идти по всем вопросам. На один вопрос можно отправить несколько сообщений текстом или голосом. "
-        "Я не перейду к следующему вопросу, пока ты не нажмёшь ➡️. "
-        "Можно оставить вопрос без ответа и просто нажать ➡️. "
+        "В вопросах с оценкой просто нажми кнопку 1-10. "
+        "В текстовых вопросах я не перейду дальше, пока ты не нажмёшь ➡️. "
+        "Можно оставить текстовый вопрос без ответа и просто нажать ➡️. "
         "В конце я соберу Markdown-файл апдейта. На время сценария нижнее меню скрыто, "
         "чтобы его кнопки не попадали в ответы.",
         reply_markup=ReplyKeyboardRemove(),
@@ -3555,7 +3573,7 @@ async def ask_current_question(
     await reply(
         update,
         question_message(question, step, len(questions), str(answers.get(question.key) or "")),
-        reply_markup=flow_keyboard(False),
+        reply_markup=question_keyboard(question),
     )
 
 
@@ -3591,6 +3609,39 @@ async def handle_flow_back(update: Update, user: dict[str, Any]) -> None:
     await ask_current_question(update, user, questions)
 
 
+async def handle_flow_rating(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict[str, Any],
+    value: str,
+) -> None:
+    questions = flow_questions_for_user(user)
+    step = int(user.get("active_step") or 0)
+    if step >= len(questions):
+        await finish_flow(update, context, user)
+        return
+
+    question = questions[step]
+    if not uses_rating_buttons(question) or rating_value(value) is None:
+        await reply(update, "Эта кнопка уже неактуальна. Продолжаем текущий вопрос.")
+        await ask_current_question(update, user, questions)
+        return
+
+    payload = store.payload(user)
+    answers = payload.setdefault("answers", {})
+    answers[question.key] = f"{value}/10"
+    user = store.update_user(
+        user["telegram_user_id"],
+        flow_payload=json.dumps(payload, ensure_ascii=False),
+        active_step=step + 1,
+        state=None,
+    )
+    if step + 1 >= len(questions):
+        await finish_flow(update, context, user)
+        return
+    await ask_current_question(update, user, questions)
+
+
 async def handle_question_answer(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -3606,6 +3657,14 @@ async def handle_question_answer(
         return
 
     question = questions[step]
+    if uses_rating_buttons(question):
+        rating = rating_value(text)
+        if rating is None:
+            await reply(update, "Выбери оценку кнопкой от 1 до 10.", reply_markup=rating_keyboard())
+            return
+        await handle_flow_rating(update, context, user, rating)
+        return
+
     had_answer = bool(str(answers.get(question.key) or "").strip())
     answers[question.key] = append_answer_text(answers.get(question.key, ""), text)
     user = store.update_user(
