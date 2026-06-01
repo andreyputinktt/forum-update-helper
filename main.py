@@ -2076,7 +2076,8 @@ async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: dict[s
         ADMIN_CHAT_ID,
         "<b>Новый пользователь ForumUpdateHelperBot</b>\n"
         f"ФИ: <b>{esc(user.get('full_name'))}</b>\n"
-        f"Бизнес-клуб: <b>{esc(user.get('business_club'))}</b>",
+        f"Бизнес-клуб: <b>{esc(user.get('business_club'))}</b>\n"
+        f"Методика: <b>{esc(methodology_for_user(user))}</b>",
     )
     if ok:
         store.update_user(user["telegram_user_id"], admin_notified=1)

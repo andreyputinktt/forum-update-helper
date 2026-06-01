@@ -1052,3 +1052,45 @@ def test_profile_cabinet_text_marks_empty_report_recipient():
     assert "отчёты остаются в личном чате" in text
     assert "Следующий форум: <b>26.06.2026</b>" in text
     assert "2026-06-26" not in text
+
+
+def test_admin_new_user_notification_includes_methodology(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    monkeypatch.setattr(bot, "ADMIN_CHAT_ID", 999)
+    sent = []
+
+    async def fake_safe_send(_context, chat_id, text, **_kwargs):
+        sent.append((chat_id, text))
+        return True
+
+    monkeypatch.setattr(bot, "safe_send", fake_safe_send)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, username, full_name, business_club,
+            methodology, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            123,
+            456,
+            "user",
+            "Андрей Путин",
+            "Эквиум",
+            "С личной стратегией (X-Competence)",
+            now,
+            now,
+        ),
+    )
+    test_store.conn.commit()
+    user = test_store.get_user(123)
+
+    bot.asyncio.run(bot.notify_admin_new_user(None, user))
+
+    assert sent[0][0] == 999
+    assert "ФИ: <b>Андрей Путин</b>" in sent[0][1]
+    assert "Бизнес-клуб: <b>Эквиум</b>" in sent[0][1]
+    assert "Методика: <b>С личной стратегией (X-Competence)</b>" in sent[0][1]
+    assert test_store.get_user(123)["admin_notified"] == 1
