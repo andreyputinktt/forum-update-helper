@@ -3944,7 +3944,7 @@ async def finish_update_flow(
     user_dir = UPDATES_DIR / str(user["telegram_user_id"])
     user_dir.mkdir(parents=True, exist_ok=True)
     filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
-    store.update_user(
+    updated = store.update_user(
         user["telegram_user_id"],
         last_update_answers=json.dumps(answers, ensure_ascii=False),
         last_update_markdown=content,
@@ -3954,20 +3954,10 @@ async def finish_update_flow(
     )
     path = user_dir / filename
     path.write_bytes(markdown_bytes_for_download(content))
-    if update.effective_message and update.effective_chat:
-        with path.open("rb") as fh:
-            await spaced_bot_send(
-                update.effective_chat.id,
-                lambda: update.effective_message.reply_document(
-                    document=fh,
-                    filename=filename,
-                    caption=f"Готово: форумный апдейт {methodology_for_user(user)}.",
-                    reply_markup=MAIN_KEYBOARD,
-                ),
-            )
     if not user.get("keep_files"):
         path.unlink(missing_ok=True)
-    await reply(update, "После форума я спрошу здоровье группы на следующее утро.", reply_markup=MAIN_KEYBOARD)
+    await reply(update, "Апдейт сохранён. После форума я спрошу здоровье группы на следующее утро.")
+    await show_updates_list(update, updated)
 
 
 async def finish_post_forum_plan(update: Update, user: dict[str, Any], answers: dict[str, str]) -> None:

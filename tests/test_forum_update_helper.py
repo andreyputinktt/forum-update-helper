@@ -711,6 +711,49 @@ def test_saved_update_files_returns_markdown_sorted(tmp_path, monkeypatch):
     assert {path.name for path in files} == {"older.md", "newer.md"}
 
 
+def test_finish_update_flow_opens_my_updates(tmp_path, monkeypatch):
+    test_store = bot.Store(tmp_path / "state.sqlite3")
+    monkeypatch.setattr(bot, "store", test_store)
+    monkeypatch.setattr(bot, "UPDATES_DIR", tmp_path / "updates")
+    monkeypatch.setattr(bot, "_openai", None)
+    replies = []
+
+    async def fake_reply(_update, text, **kwargs):
+        replies.append((text, kwargs.get("reply_markup")))
+
+    monkeypatch.setattr(bot, "reply", fake_reply)
+    now = bot.now_iso()
+    test_store.conn.execute(
+        """
+        INSERT INTO users (
+            telegram_user_id, chat_id, full_name, business_club, forum_group,
+            methodology, keep_files, next_forum_date, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            123,
+            456,
+            "Андрей",
+            "Эквиум",
+            "Форум",
+            "Классическая (YPO)",
+            1,
+            "2026-06-23",
+            now,
+            now,
+        ),
+    )
+    test_store.conn.commit()
+    user = test_store.get_user(123)
+
+    bot.asyncio.run(bot.finish_update_flow(None, None, user, {"classic_business_rating": "8/10"}))
+
+    assert any("Апдейт сохранён" in text for text, _markup in replies)
+    assert "<b>Мои апдейты</b>" in replies[-1][0]
+    assert "[.md]" in replies[-1][0]
+    assert "[.html]" in replies[-1][0]
+
+
 def test_markdown_download_bytes_include_utf8_bom_once():
     payload = bot.markdown_bytes_for_download("\ufeff# Форум")
 
