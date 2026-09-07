@@ -58,6 +58,36 @@ Telegram-бот для подготовки к форуму по формата�
 - User completes update preparation
 - User keeps update files
 
+### Unified X-Competence interview and mentor
+- New X-Competence sessions use one 18-step interview, grouped by sphere:
+  rating, meaningful positive event, meaningful difficult event, retrospective,
+  next period; then main request, situation/attempts, and experience requested
+  from the group. Events ask for facts, personal importance and feelings.
+  Ratings, events and the request are reused for a traditional forum overview;
+  the user does not fill two questionnaires.
+- Each question displays a short, dated excerpt from the last completed update
+  of the same forum group, or explicitly says that there is no previous answer.
+  Retrospectives additionally recall the previous next-period plan. This source
+  is frozen when the interview starts and is not copied into new answers.
+  Users may explicitly reuse the displayed previous answer or clear a current
+  answer; text and voice fragments remain supported. Skipping is explicit.
+- After the questionnaire the mentor asks at most three adaptive, single
+  questions about concrete events, feelings, personal meaning, tension and the
+  key forum request. Each next question uses the actual preceding reply.
+  No diagnoses, invented motives, leading interpretations or instructions to
+  disclose unwanted details. The user may skip or save at any moment.
+- Mentor questions, answers and progress are persisted in SQLite. Provider
+  errors/timeouts use a short deterministic question without losing answers.
+  Only completing/saving the interview creates a ready update and exports it.
+- The final Markdown includes a structured traditional overview (three ratings,
+  six event/importance/feelings entries, main request), X-Competence detail and
+  the mentor dialogue. AI may split event answers into verbatim excerpts only;
+  unsupported/missing fields stay empty and raw source answers are retained.
+  HTML is derived from that same Markdown and preserves both formats.
+- In-progress legacy questionnaires keep their existing question order/answers
+  across deployment; a short completion step collects missing traditional
+  event answers before the mentor. Saved historical prompts remain parseable.
+
 ### Stable update history
 - Each completed or uploaded update receives a unique filename, even when two
   updates finish within the same minute. Editing previous answers creates a new

@@ -401,7 +401,8 @@ def test_build_update_markdown_contains_sections():
 
     assert "# Форум-апдейт — High Level" in md
     assert "- Методика: С личной стратегией (X-Competence)" in md
-    assert "Часть 1. Оценка трёх сфер" in md
+    assert "Традиционный форум — обзор месяца" in md
+    assert "X-Competence — Моё дело" in md
     assert "8/10" in md
 
 
@@ -473,7 +474,7 @@ def test_classic_questions_are_condensed():
 def test_strategy_methodology_selects_x_competence_questions():
     user = {"methodology": "С личной стратегией (X-Competence)"}
 
-    assert bot.update_questions_for_user(user) == bot.UPDATE_QUESTIONS
+    assert bot.update_questions_for_user(user) == bot.UNIFIED_UPDATE_QUESTIONS
 
 
 def test_methodology_keyboard_has_no_skip_button():
