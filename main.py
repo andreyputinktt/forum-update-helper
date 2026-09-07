@@ -384,6 +384,16 @@ def esc(value: Any) -> str:
     return html.escape(str(value or ""), quote=False)
 
 
+def escaped_excerpt(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    truncated = len(text) > limit
+    text = text[:limit]
+    while len(esc(text)) > limit - 1:
+        text = text[:max(0, len(text) - max(1, (len(esc(text)) - limit) // 4))]
+        truncated = True
+    return esc(text) + ("…" if truncated else "")
+
+
 def clip(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     text = text.strip()
     if len(text) <= limit:
@@ -563,6 +573,7 @@ def load_forum_guide_context(methodology: str | None = None, max_chars: int = 18
         paths.append(CLASSIC_GUIDE_PATH)
     elif normalized == METHODOLOGY_STRATEGY:
         paths.append(X_COMPETENCE_GUIDE_PATH)
+        paths.append(FORUM_GUIDE_DIR / "unified-interview.md")
     else:
         paths.extend([CLASSIC_GUIDE_PATH, X_COMPETENCE_GUIDE_PATH])
     for path in paths:
@@ -3183,18 +3194,24 @@ def previous_update_context(user: dict[str, Any]) -> dict[str, Any]:
         if group and markdown.splitlines()[0].strip() != f"# Форум-апдейт — {group}":
             continue
         answers = parse_update_markdown_answers(markdown, UPDATE_QUESTIONS + CLASSIC_UPDATE_QUESTIONS + UNIFIED_UPDATE_QUESTIONS)
-        for index, (sphere, _) in enumerate(SPHERE_PAIRS):
-            classic_key = ("classic_business_rating", "classic_family_rating", "classic_personal_rating")[index]
-            answers.setdefault(f"rating_{sphere}", answers.get(classic_key, ""))
-            answers.setdefault(classic_key, answers.get(f"rating_{sphere}", ""))
-        answers.setdefault("main_request_core", answers.get("classic_main_question", ""))
-        answers.setdefault("classic_main_question", answers.get("main_request_core", ""))
-        if not answers.get("main_request_details"):
-            answers["main_request_details"] = "\n\n".join(
-                str(answers[key]) for key in ("main_request_money", "main_request_goal_history", "main_request_attempts", "main_request_choice") if answers.get(key)
-            )
+        answers = compatible_update_answers(answers)
         return {"answers": answers, "filename": filename, "date": item["date"]}
     return {"answers": {}, "filename": "", "date": ""}
+
+
+def compatible_update_answers(answers: dict[str, Any]) -> dict[str, Any]:
+    answers = dict(answers)
+    for index, (sphere, _) in enumerate(SPHERE_PAIRS):
+        classic_key = ("classic_business_rating", "classic_family_rating", "classic_personal_rating")[index]
+        answers.setdefault(f"rating_{sphere}", answers.get(classic_key, ""))
+        answers.setdefault(classic_key, answers.get(f"rating_{sphere}", ""))
+    answers.setdefault("main_request_core", answers.get("classic_main_question", ""))
+    answers.setdefault("classic_main_question", answers.get("main_request_core", ""))
+    if not answers.get("main_request_details"):
+        answers["main_request_details"] = "\n\n".join(
+            str(answers[key]) for key in ("main_request_money", "main_request_goal_history", "main_request_attempts", "main_request_choice") if answers.get(key)
+        )
+    return answers
 
 
 def previous_question_hint(question: Question, payload: dict[str, Any]) -> str:
@@ -3202,11 +3219,11 @@ def previous_question_hint(question: Question, payload: dict[str, Any]) -> str:
     answers = previous.get("answers") or {}
     answer = str(answers.get(question.key) or "")
     title = f"Прошлый апдейт · {previous.get('date')}" if previous.get("date") else "Прошлый апдейт"
-    parts = [f"<b>{esc(title)}</b>", f"<blockquote>{esc(clip(answer, 650))}</blockquote>" if answer else "По этому вопросу прошлого ответа нет."]
+    parts = [f"<b>{esc(title)}</b>", f"<blockquote>{escaped_excerpt(answer, 600)}</blockquote>" if answer else "По этому вопросу прошлого ответа нет."]
     if question.key.startswith("retrospective_"):
         plan = answers.get(question.key.replace("retrospective_", "next_period_", 1))
         if plan:
-            parts.extend(["<b>Что планировал к этому форуму</b>", f"<blockquote>{esc(clip(str(plan), 500))}</blockquote>"])
+            parts.extend(["<b>Что планировал к этому форуму</b>", f"<blockquote>{escaped_excerpt(plan, 350)}</blockquote>"])
     return "\n".join(parts)
 
 
@@ -3581,7 +3598,8 @@ async def begin_update_flow(
     if edit_previous:
         previous_answers = parse_json_dict(user.get("last_update_answers")) if source_selector is None else {}
         if selected_markdown is not None:
-            previous_answers = parse_update_markdown_answers(selected_markdown, questions)
+            previous_answers = parse_update_markdown_answers(selected_markdown, UPDATE_QUESTIONS + CLASSIC_UPDATE_QUESTIONS + UNIFIED_UPDATE_QUESTIONS)
+        previous_answers = compatible_update_answers(previous_answers)
         matching_answers = {
             key: str(value)
             for key, value in previous_answers.items()
@@ -3682,7 +3700,7 @@ def question_message(question: Question, step: int, total: int, current_answer: 
     )
     answer = current_answer.strip()
     if answer:
-        message += f"\n\n<b>Текущий ответ</b>\n<blockquote>{esc(clip(answer, 1600))}</blockquote>"
+        message += f"\n\n<b>Текущий ответ</b>\n<blockquote>{escaped_excerpt(answer, 1100)}</blockquote>"
     return message
 
 
@@ -3795,7 +3813,8 @@ async def generate_mentor_question(user: dict[str, Any], payload: dict[str, Any]
 
     def call() -> str:
         response = _openai.with_options(timeout=35, max_retries=0).responses.create(
-            model=OPENAI_MODEL, instructions=instructions, input=material, max_output_tokens=250,
+            model=OPENAI_MODEL, instructions=instructions, input=material,
+            max_output_tokens=1000, reasoning={"effort": "low"}, text={"verbosity": "low"},
         )
         question = extract_response_text(response).strip()
         if not question or len(question) > 500 or question.count("?") != 1:
@@ -3953,10 +3972,13 @@ async def handle_question_answer(
     )
 
     verb = "Добавил к ответу" if had_answer else "Записал"
+    keyboard = flow_keyboard(True)
+    if user.get("active_flow") in {"update", "update_extra"}:
+        keyboard = InlineKeyboardMarkup([*keyboard.inline_keyboard, [InlineKeyboardButton("Заменить ответ", callback_data=f"flow:clear:{step}")]])
     await reply(
         update,
         f"{verb}. Можно прислать ещё сообщение к этому вопросу или нажать ➡️.",
-        reply_markup=flow_keyboard(True),
+        reply_markup=keyboard,
     )
 
 
@@ -4134,7 +4156,10 @@ def build_ai_forum_standard_markdown(user: dict[str, Any]) -> str:
         "7. Если пользователь просит вернуться назад, покажи предыдущий вопрос и дай заменить ответ.",
         "8. Помогай формулировать личный опыт, чувства и главный запрос, но не придумывай факты за пользователя.",
         "9. При оценке апдейта проверяй: личный опыт, конкретику, чувства, глубину 5%, отсутствие советов и ясность вопроса к форуму.",
-        "10. В конце выдай один Markdown-файл форумного апдейта с секциями выбранного формата и короткой сводкой.",
+        "10. Для X-Competence используй один проход по сферам: оценка, плюс/минус с важностью и чувствами, итоги, планы; затем главный запрос. Из этих же ответов сформируй традиционный обзор.",
+        "11. Под вопросом показывай соответствующий ответ прошлого готового апдейта той же группы, если он есть; не копируй его без решения автора.",
+        "12. В конце задай до трёх уточняющих вопросов по одному, учитывая каждый ответ: событие, чувства, личная важность, главный запрос. Можно пропустить или сразу сохранить.",
+        "13. Выдай один Markdown-файл с традиционным обзором, деталями X-Competence, уточнениями и короткой сводкой. Не придумывай неназванные чувства.",
         "",
         "## Выбранная последовательность вопросов",
         "",

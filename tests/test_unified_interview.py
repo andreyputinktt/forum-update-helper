@@ -152,3 +152,45 @@ def test_structuring_rejects_invented_feelings(interview, monkeypatch):
     rendered = bot.traditional_markdown({"classic_Бизнес_plus": "Открыл офис. Для команды."}, fields)
     assert "Страх провала" not in rendered
     assert "Открыл офис. Для команды." in rendered
+
+
+def test_complete_unified_interview_routes_all_answers_to_both_views(interview):
+    store, _, replies = interview
+    asyncio.run(bot.begin_update_flow(None, store.get_user(123)))
+    for question in bot.UNIFIED_UPDATE_QUESTIONS:
+        user = store.get_user(123)
+        assert bot.flow_questions_for_user(user)[user["active_step"]].key == question.key
+        text = "Событие: Встретился с командой\nВажность: Мне важно доверие\nЧувства: Радость, гордость, волнение" if question.key in bot.event_keys() else "Мой ответ"
+        asyncio.run(bot.route_text(None, None, user, text))
+        asyncio.run(bot.handle_flow_next(None, None, store.get_user(123)))
+    user = store.get_user(123)
+    assert user["active_flow"] == "update_mentor"
+    asyncio.run(bot.route_text(None, None, user, "Я боюсь потерять доверие"))
+    asyncio.run(bot.handle_mentor_action(None, None, store.get_user(123), "mentor:save"))
+    markdown = store.get_user(123)["last_update_markdown"]
+    assert "Мне важно доверие" in markdown and "Радость, гордость, волнение" in markdown
+    assert "Я боюсь потерять доверие" in markdown
+    assert len(bot.saved_update_files(store.get_user(123))) == 1
+
+
+def test_long_previous_and_current_answers_keep_valid_telegram_html(interview):
+    import xml.etree.ElementTree as ET
+    store, _, replies = interview
+    question = next(q for q in bot.UNIFIED_UPDATE_QUESTIONS if q.key == "retrospective_Моё дело")
+    payload = {"interview_version": 2, "answers": {question.key: "<&>" * 2000}, "previous_update": {
+        "date": "01.09.2026", "answers": {question.key: "<&>" * 2000, "next_period_Моё дело": "<&>" * 2000}}}
+    user = store.set_flow(123, "update", bot.UNIFIED_UPDATE_QUESTIONS.index(question), payload)
+    asyncio.run(bot.ask_current_question(None, user, bot.UNIFIED_UPDATE_QUESTIONS))
+    text = replies[-1][0]
+    assert len(text) < bot.TELEGRAM_TEXT_LIMIT
+    ET.fromstring("<root>" + text + "</root>")
+
+
+def test_editing_legacy_markdown_preserves_merged_request_details(interview):
+    store, _, _ = interview
+    user = store.get_user(123)
+    content = bot.build_update_markdown(user, {"main_request_money": "Цена вопроса", "main_request_attempts": "Мои попытки"}, questions=bot.UPDATE_QUESTIONS)
+    user = bot.save_completed_update(user, content)
+    asyncio.run(bot.begin_update_flow(None, user, edit_previous=True, source_selector=bot.update_selector(user["last_update_filename"])))
+    answer = store.payload(store.get_user(123))["answers"]["main_request_details"]
+    assert "Цена вопроса" in answer and "Мои попытки" in answer
