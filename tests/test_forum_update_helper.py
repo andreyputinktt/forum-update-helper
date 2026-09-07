@@ -282,7 +282,7 @@ def test_begin_post_forum_plan_flow_sends_single_intro_message(tmp_path, monkeyp
     )
     test_store.conn.commit()
 
-    bot.asyncio.run(bot.begin_post_forum_plan_flow(None, test_store.get_user(123), source_selector="0"))
+    bot.asyncio.run(bot.begin_post_forum_plan_flow(None, test_store.get_user(123), source_selector=bot.update_selector(update_path.name)))
 
     assert len(replies) == 1
     assert "Личный план действий по разбору" in replies[0]

@@ -58,6 +58,35 @@ Telegram-бот для подготовки к форуму по формата�
 - User completes update preparation
 - User keeps update files
 
+### Stable update history
+- Each completed or uploaded update receives a unique filename, even when two
+  updates finish within the same minute. Editing previous answers creates a new
+  completed version; earlier files remain available.
+- List links identify a specific filename within the authenticated user's
+  history. Adding files, changing modification times or restarting the bot must
+  not change what a link downloads, edits or adds a personal plan to.
+- Old positional links are rejected with a request to reopen “Мои апдейты”;
+  they cannot be resolved safely after the list changes. Missing files never
+  fall back to the latest update. With file storage disabled only the current
+  database copy remains available; expired links fail explicitly.
+- Uploaded `.md` files in the bot's forum-update format are registered as ready
+  updates. Other attachments retain the existing file-storage behavior.
+
+### Personal profile export (explicit owner opt-in)
+- The configured Telegram user ID (Andrey's `utandr`, verified during setup)
+  exports completed/uploaded Markdown updates to the configured profile folder
+  `about-aputin/forum-updates/from-bot/`. Username changes do not transfer access.
+- Export copies the source Markdown and maintains a local README index. Distinct
+  updates and revisions have separate snapshot files. Draft answers, diary
+  messages, unrelated attachments and other users' updates are excluded.
+- Export runs after completion/upload/personal-plan changes, at startup and
+  during daily maintenance to backfill retained history and retry failures.
+  Repeating an export is idempotent. Export failure does not lose the bot's update.
+- This is an explicitly configured data export, disabled by default. It does
+  not modify psychological interpretations or existing hand-curated snapshots.
+  Profile copies are independently retained personal records; bot data deletion
+  does not remove them or their Git history.
+
 ### Forum date reminders
 - Pre-forum reminder is due
 - Post-forum health check is due

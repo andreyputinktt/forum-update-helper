@@ -18,7 +18,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
+
+from profile_export import export_snapshot
 
 import dateparser
 from dotenv import load_dotenv
@@ -42,6 +45,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).expanduser()
 DB_PATH = DATA_DIR / "forum_update_helper.sqlite3"
 UPLOADS_DIR = DATA_DIR / "uploads"
 UPDATES_DIR = DATA_DIR / "updates"
+PROFILE_EXPORT_USER_ID = int(os.getenv("PROFILE_EXPORT_USER_ID") or "0")
+PROFILE_EXPORT_DIR = os.getenv("PROFILE_EXPORT_DIR", "")
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "ForumUpdateHelperBot").removeprefix("@")
@@ -1237,6 +1242,9 @@ async def handle_start_payload(
     if not match:
         return False
     action, selector = match.groups()
+    if not re.fullmatch(r"f[0-9a-f]{24}", selector):
+        await reply(update, "Эта ссылка устарела. Открой «Мои апдейты» и выбери файл ещё раз.")
+        return True
     if action == "md":
         await send_saved_update_files(update, user, source_selector=selector)
         return True
@@ -1596,6 +1604,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_onboarding_text(update, context, "да" if data.endswith("1") else "нет")
     elif data.startswith("skip:"):
         await handle_onboarding_skip(update, context, data.split(":", 1)[1])
+    elif re.match(r"updates:(edit|md|html|plan):", data) and not re.fullmatch(r"f[0-9a-f]{24}", data.rsplit(":", 1)[1]):
+        await reply(update, "Эта ссылка устарела. Открой «Мои апдейты» и выбери файл ещё раз.")
     elif data.startswith("updates:edit:"):
         if not await require_profile_settings(update, context, user):
             return
@@ -2286,17 +2296,28 @@ def saved_update_files(user: dict[str, Any]) -> list[Path]:
     user_dir = UPDATES_DIR / str(user["telegram_user_id"])
     if not user_dir.exists():
         return []
-    return sorted(user_dir.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return sorted(user_dir.glob("*.md"), key=lambda path: (update_file_timestamp(path), path.stat().st_mtime_ns), reverse=True)
+
+
+def update_file_timestamp(path: Path) -> float:
+    match = re.match(r"forum-update-(\d{8})-(\d{4}(?:\d{2})?)(?:-|\.)", path.name)
+    if match:
+        stamp = "".join(match.groups())
+        try:
+            return datetime.strptime(stamp, "%Y%m%d%H%M%S" if len(stamp) == 14 else "%Y%m%d%H%M").replace(tzinfo=TZ).timestamp()
+        except ValueError:
+            pass
+    return path.stat().st_mtime
 
 
 def stored_update_items(user: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for index, path in enumerate(saved_update_files(user)):
+    for path in saved_update_files(user):
         items.append(
             {
-                "selector": str(index),
+                "selector": update_selector(path.name),
                 "filename": path.name,
-                "date": datetime.fromtimestamp(path.stat().st_mtime, TZ).strftime("%d.%m.%Y"),
+                "date": datetime.fromtimestamp(update_file_timestamp(path), TZ).strftime("%d.%m.%Y"),
                 "path": path,
             }
         )
@@ -2307,7 +2328,7 @@ def stored_update_items(user: dict[str, Any]) -> list[dict[str, Any]]:
         items.insert(
             0,
             {
-                "selector": "latest",
+                "selector": update_selector(latest_filename),
                 "filename": latest_filename,
                 "date": latest_at,
                 "path": None,
@@ -2400,7 +2421,9 @@ def ensure_markdown_file_has_utf8_bom(path: Path) -> bool:
     if original == normalized:
         return False
     try:
+        stat = path.stat()
         path.write_bytes(normalized)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     except OSError as exc:
         log.warning("cannot migrate markdown file to utf-8 bom path=%s error=%s", path, exc)
         return False
@@ -2427,40 +2450,43 @@ def migrate_saved_update_markdown_files() -> int:
     return migrated
 
 
+def update_selector(filename: str) -> str:
+    return "f" + hashlib.sha256(filename.encode("utf-8")).hexdigest()[:24]
+
+
 def latest_update_markdown(user: dict[str, Any], source_selector: str | None = None) -> tuple[str, str] | None:
     files = saved_update_files(user)
     if source_selector and source_selector != "latest":
-        try:
-            path = files[int(source_selector)]
-        except (ValueError, IndexError):
-            return None
-        text = read_markdown_file_text(path)
-        return (text, path.name) if text else None
+        path = selected_update_path(user, source_selector)
+        if path is not None:
+            text = read_markdown_file_text(path)
+            return (text, path.name) if text else None
+        filename = str(user.get("last_update_filename") or "")
+        markdown = str(user.get("last_update_markdown") or "").strip()
+        if filename and markdown and source_selector == update_selector(filename):
+            return repair_utf8_mojibake(markdown), filename
+        return None
     if source_selector == "latest":
         markdown = str(user.get("last_update_markdown") or "").strip()
         if markdown:
             filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
             return repair_utf8_mojibake(markdown), str(filename)
         return None
-    if files:
-        text = read_markdown_file_text(files[0])
-        if text:
-            return text, files[0].name
     markdown = str(user.get("last_update_markdown") or "").strip()
     if markdown:
         filename = user.get("last_update_filename") or f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
         return repair_utf8_mojibake(markdown), str(filename)
+    if files:
+        text = read_markdown_file_text(files[0])
+        if text:
+            return text, files[0].name
     return None
 
 
 def selected_update_path(user: dict[str, Any], source_selector: str | None) -> Path | None:
-    if not source_selector or source_selector == "latest":
-        return None
-    files = saved_update_files(user)
-    try:
-        return files[int(source_selector)]
-    except (ValueError, IndexError):
-        return None
+    if source_selector == "latest":
+        source_selector = update_selector(str(user.get("last_update_filename") or ""))
+    return next((path for path in saved_update_files(user) if update_selector(path.name) == source_selector), None)
 
 
 def write_selected_update_markdown(
@@ -2470,16 +2496,58 @@ def write_selected_update_markdown(
     filename: str,
 ) -> None:
     normalized = repair_utf8_mojibake(str(markdown or "").strip()) + "\n"
+    if latest_update_markdown(user, source_selector) is None:
+        raise ValueError("Selected update no longer exists")
     path = selected_update_path(user, source_selector)
     if path is not None:
         path.write_bytes(markdown_bytes_for_download(normalized))
-    if source_selector == "latest" or not path or str(user.get("last_update_filename") or "") == filename:
+    if str(user.get("last_update_filename") or "") == filename:
         store.update_user(
             user["telegram_user_id"],
             last_update_markdown=normalized,
             last_update_filename=filename,
             last_update_at=now_iso(),
         )
+    export_profile_update(user, filename, normalized)
+
+
+def export_profile_update(user: dict[str, Any], filename: str, markdown: str) -> None:
+    if not PROFILE_EXPORT_DIR or not PROFILE_EXPORT_USER_ID or user["telegram_user_id"] != PROFILE_EXPORT_USER_ID:
+        return
+    try:
+        changed = export_snapshot(Path(PROFILE_EXPORT_DIR).expanduser(), filename, markdown)
+        if changed:
+            log.info("profile update exported user_id=%s update=%s", user["telegram_user_id"], update_selector(filename))
+    except OSError as exc:
+        log.error("profile export failed user_id=%s error_type=%s", user["telegram_user_id"], type(exc).__name__)
+
+
+def sync_profile_updates() -> None:
+    if not PROFILE_EXPORT_DIR or not PROFILE_EXPORT_USER_ID:
+        return
+    user = store.get_user(PROFILE_EXPORT_USER_ID)
+    if user is None:
+        return
+    for item in stored_update_items(user):
+        selected = latest_update_markdown(user, item["selector"])
+        if selected:
+            markdown, filename = selected
+            export_profile_update(user, filename, markdown)
+
+
+def save_completed_update(user: dict[str, Any], content: str, **fields: Any) -> dict[str, Any]:
+    filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex}.md"
+    if user.get("keep_files"):
+        user_dir = UPDATES_DIR / str(user["telegram_user_id"])
+        user_dir.mkdir(parents=True, exist_ok=True)
+        with (user_dir / filename).open("xb") as handle:
+            handle.write(markdown_bytes_for_download(content))
+    updated = store.update_user(
+        user["telegram_user_id"], last_update_markdown=content,
+        last_update_filename=filename, last_update_at=now_iso(), **fields,
+    )
+    export_profile_update(updated, filename, content)
+    return updated
 
 
 async def send_temp_document(
@@ -2986,7 +3054,7 @@ async def send_saved_update_files(update: Update, user: dict[str, Any], source_s
     if latest is None:
         await reply(
             update,
-            "Сохранённых .md апдейтов пока нет. Сначала подготовь апдейт.",
+            "Не нашёл этот апдейт или ссылка устарела. Открой «Мои апдейты» и выбери файл ещё раз.",
             reply_markup=updates_menu_keyboard(user),
         )
         return
@@ -3005,7 +3073,7 @@ async def send_readable_update_file(update: Update, user: dict[str, Any], source
     if latest is None:
         await reply(
             update,
-            "Сохранённых апдейтов пока нет. Сначала подготовь апдейт.",
+            "Не нашёл этот апдейт или ссылка устарела. Открой «Мои апдейты» и выбери файл ещё раз.",
             reply_markup=updates_menu_keyboard(user),
         )
         return
@@ -3426,6 +3494,9 @@ async def begin_update_flow(
     selected_markdown: str | None = None
     if edit_previous and source_selector is not None:
         selected_update = latest_update_markdown(user, source_selector)
+        if selected_update is None:
+            await reply(update, "Эта ссылка устарела. Открой «Мои апдейты» и выбери файл ещё раз.")
+            return
         if selected_update is not None:
             selected_markdown = selected_update[0]
             selected_methodology = methodology_from_update_markdown(selected_markdown)
@@ -3524,7 +3595,7 @@ async def begin_post_forum_plan_flow(
     answers = parse_personal_plan_answers(markdown)
     payload = {
         "answers": answers,
-        "update_selector": source_selector,
+        "update_selector": update_selector(filename),
         "update_filename": filename,
     }
     user = store.set_flow(user["telegram_user_id"], "post_forum_plan", 0, payload)
@@ -3941,21 +4012,11 @@ async def finish_update_flow(
     questions = update_questions_for_user(user)
     reflection = await maybe_reflect_update(user, answers, questions)
     content = build_update_markdown(user, answers, reflection, questions)
-    user_dir = UPDATES_DIR / str(user["telegram_user_id"])
-    user_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"forum-update-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.md"
-    updated = store.update_user(
-        user["telegram_user_id"],
+    updated = save_completed_update(
+        user, content,
         last_update_answers=json.dumps(answers, ensure_ascii=False),
-        last_update_markdown=content,
-        last_update_filename=filename,
         last_update_methodology=methodology_for_user(user),
-        last_update_at=now_iso(),
     )
-    path = user_dir / filename
-    path.write_bytes(markdown_bytes_for_download(content))
-    if not user.get("keep_files"):
-        path.unlink(missing_ok=True)
     await reply(update, "Апдейт сохранён. После форума я спрошу здоровье группы на следующее утро.")
     await show_updates_list(update, updated)
 
@@ -3969,6 +4030,8 @@ async def finish_post_forum_plan(update: Update, user: dict[str, Any], answers: 
     )
     source_selector = payload.get("update_selector")
     update_filename = str(payload.get("update_filename") or "")
+    if update_filename:
+        source_selector = update_selector(update_filename)
     if source_selector is not None and update_filename:
         selected = latest_update_markdown(user, str(source_selector))
         if selected is None:
@@ -4159,6 +4222,19 @@ async def handle_document(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
         path = Path(tmp.name)
     try:
         await tg_file.download_to_drive(custom_path=str(path))
+        if Path(filename).suffix.lower() == ".md":
+            markdown = repair_utf8_mojibake(decode_markdown_bytes(path.read_bytes())).strip()
+            if markdown.startswith("# Форум-апдейт") and re.search(r"^## ", markdown, re.M):
+                methodology = methodology_from_update_markdown(markdown) or methodology_for_user(user)
+                questions = update_questions_for_user({**user, "methodology": methodology})
+                updated = save_completed_update(
+                    user, markdown + "\n",
+                    last_update_answers=json.dumps(parse_update_markdown_answers(markdown, questions), ensure_ascii=False),
+                    last_update_methodology=methodology,
+                )
+                await reply(update, "Готовый апдейт загружен и добавлен в «Мои апдейты».")
+                await show_updates_list(update, updated)
+                return
         if user.get("keep_files"):
             await reply(update, "Файл скачал и сохранил по твоей настройке.")
         else:
@@ -4169,6 +4245,7 @@ async def handle_document(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def daily_maintenance(context: ContextTypes.DEFAULT_TYPE) -> None:
+    sync_profile_updates()
     today = datetime.now(TZ).date()
     for user in store.complete_users():
         if not is_profile_complete(user):
@@ -4355,6 +4432,7 @@ async def post_init(application: Application) -> None:
     migrated = migrate_saved_update_markdown_files()
     if migrated:
         log.info("migrated saved markdown updates to utf-8 bom count=%s", migrated)
+    sync_profile_updates()
     maintenance_time = parse_time(DAILY_MAINTENANCE_TIME)
     post_forum_plan_time = time_minus_minutes(maintenance_time, 30)
     application.job_queue.run_daily(
