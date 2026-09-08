@@ -4322,7 +4322,8 @@ async def compose_edited_update(user: dict[str, Any], answers: dict[str, str], h
         response = _openai.with_options(timeout=120, max_retries=0).responses.create(
             model=OPENAI_MODEL, instructions=editorial.EDITOR_INSTRUCTIONS,
             input=json.dumps(material, ensure_ascii=False), max_output_tokens=11000,
-            reasoning={"effort": "medium"}, text={"verbosity": "low", "format": {"type": "json_object"}},
+            reasoning={"effort": "medium"}, text={"verbosity": "low", "format": {
+                "type": "json_schema", "name": "forum_update", "strict": True, "schema": editorial.response_schema()}},
         )
         if getattr(response, "status", None) != "completed":
             raise ValueError("Incomplete editorial response")
