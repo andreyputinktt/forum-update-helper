@@ -4313,7 +4313,7 @@ async def compose_edited_update(user: dict[str, Any], answers: dict[str, str], h
     if not _openai:
         raise RuntimeError("Editing provider unavailable")
     dialogue = store.payload(user).get("mentor_dialogue", [])
-    material = {"answers": answers, "mentor": dialogue}
+    material = {"response_format": "json", "answers": answers, "mentor": dialogue}
     # Spelling hints share the ASR owner's access check; they are not factual evidence.
     if TRANSCRIPTION_LEXICON_USER_ID and user["telegram_user_id"] == TRANSCRIPTION_LEXICON_USER_ID:
         material["spelling_context"] = transcription_prompt(user)
