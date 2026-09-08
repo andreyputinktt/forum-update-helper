@@ -4319,10 +4319,10 @@ async def compose_edited_update(user: dict[str, Any], answers: dict[str, str], h
         material["spelling_context"] = transcription_prompt(user)
 
     def call() -> dict[str, Any]:
-        response = _openai.with_options(timeout=100, max_retries=0).responses.create(
+        response = _openai.with_options(timeout=120, max_retries=0).responses.create(
             model=OPENAI_MODEL, instructions=editorial.EDITOR_INSTRUCTIONS,
             input=json.dumps(material, ensure_ascii=False), max_output_tokens=11000,
-            reasoning={"effort": "low"}, text={"verbosity": "low", "format": {"type": "json_object"}},
+            reasoning={"effort": "medium"}, text={"verbosity": "low", "format": {"type": "json_object"}},
         )
         if getattr(response, "status", None) != "completed":
             raise ValueError("Incomplete editorial response")
