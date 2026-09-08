@@ -88,9 +88,10 @@ def test_profile_exports_only_owner_and_preserves_revisions(history):
     bot.sync_profile_updates()
     bot.sync_profile_updates()
     files = list((root / "profile").glob("forum-update-*.md"))
-    assert len(files) == 2
+    assert len(files) == 1
     contents = [f.read_text() for f in files]
-    assert "# first\n" in contents
+    archived = list((root / "profile/superseded").glob("forum-update-*.md"))
+    assert len(archived) == 1 and archived[0].read_text() == "# first\n"
     assert any("План" in text for text in contents)
     assert all("foreign" not in text for text in contents)
     assert all(f.name in (root / "profile/README.md").read_text() for f in files)

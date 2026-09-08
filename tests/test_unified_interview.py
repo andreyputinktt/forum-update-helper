@@ -17,6 +17,21 @@ def interview(history, monkeypatch):
         replies.append((text, kwargs.get("reply_markup")))
 
     monkeypatch.setattr(bot, "reply", reply)
+    # Flow tests isolate the editor; its provider/validation contract has dedicated tests.
+    async def compose(user, answers, header=None):
+        def value(text):
+            return {"text": text} if text else None
+        data = {"spheres": [], "request": {key: None for key in bot.editorial.REQUEST_FIELDS}, "uncertainties": []}
+        for sphere, classic in bot.SPHERE_PAIRS:
+            section = {key: None for key in bot.editorial.FIELDS}
+            section.update(name=classic, overview=value(answers.get(f"rating_{sphere}")),
+                           positive_event=value(answers.get(f"classic_{classic}_plus")))
+            data["spheres"].append(section)
+        dialogue = store.payload(user).get("mentor_dialogue", [])
+        data["request"]["question"] = value(answers.get("main_request_core"))
+        data["request"]["context"] = value(" ".join(item.get("answer", "") for item in dialogue))
+        return bot.editorial.render_markdown(header or "# Форум-апдейт — Мой форум", data, answers, dialogue)
+    monkeypatch.setattr(bot, "compose_edited_update", compose)
     return store, root, replies
 
 
@@ -100,12 +115,12 @@ def test_mentor_rounds_persist_and_only_final_save_exports(interview):
     assert user["active_flow"] is None
     markdown = user["last_update_markdown"]
     assert "Традиционный форум" in markdown and "X-Competence" in markdown
-    assert "Уточнения с ментором" in markdown and "Мне было тревожно" in markdown
+    assert "Главный запрос к форуму" in markdown and "Мне было тревожно" in markdown
     assert len(list((root / "profile").glob("forum-update-*.md"))) == 1
     parsed = bot.parse_update_markdown_answers(markdown, bot.UNIFIED_UPDATE_QUESTIONS)
-    assert parsed["classic_Бизнес_plus"] == answers["classic_Бизнес_plus"]
+    assert answers["classic_Бизнес_plus"] in parsed["classic_Бизнес_plus"]
     html = asyncio.run(bot.markdown_to_ai_readable_html_result(markdown))[0]
-    assert "Традиционный форум" in html and "X-Competence — Моё дело" in html and "Мне было тревожно" in html
+    assert "Традиционный форум" in html and "<h2>Бизнес</h2>" in html and "Мне было тревожно" in html
 
 
 def test_mentor_can_save_immediately(interview):

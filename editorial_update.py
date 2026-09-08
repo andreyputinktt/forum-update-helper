@@ -177,6 +177,7 @@ def html_body(markdown, inline):
     """Small deterministic renderer for our own Markdown; no answer truncation."""
     body = []
     for block in re.split(r"\n\s*\n", visible_markdown(markdown).strip()):
+        block = html.unescape(block)
         heading = re.fullmatch(r"(#{1,3})\s+([^\n]+)", block)
         if heading:
             level = len(heading[1])

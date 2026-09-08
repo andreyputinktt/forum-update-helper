@@ -3176,7 +3176,7 @@ def parse_update_markdown_answers(markdown: str, questions: list[Question]) -> d
     source = editorial.read_source(markdown)
     markdown = editorial.visible_markdown(markdown)
     prompt_to_answer: dict[str, str] = {}
-    for match in re.finditer(r"\*\*(.*?)\*\*\s*\n\n(.*?)(?=\n\*\*|\n## |\Z)", markdown, flags=re.S):
+    for match in re.finditer(r"^\*\*((?:(?!\*\*).)*)\*\*[ \t]*\n\n(.*?)(?=\n\*\*|\n## |\Z)", markdown, flags=re.S | re.M):
         prompt = compact_markdown_key(match.group(1))
         answer = match.group(2).strip()
         if answer and answer != "_Нет ответа_":
