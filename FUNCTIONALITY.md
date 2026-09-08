@@ -93,11 +93,25 @@ Telegram-бот для подготовки к форуму по формата�
 - Mentor questions, answers and progress are persisted in SQLite. Provider
   errors/timeouts use a short deterministic question without losing answers.
   Only completing/saving the interview creates a ready update and exports it.
-- The final Markdown includes a structured traditional overview (three ratings,
-  six event/importance/feelings entries, main request), X-Competence detail and
-  the mentor dialogue. AI may split event answers into verbatim excerpts only;
-  unsupported/missing fields stay empty and raw source answers are retained.
-  HTML is derived from that same Markdown and preserves both formats.
+- The final X-Competence Markdown is an edited first-person update: one section
+  per sphere combining rating, significant positive/negative events, personal
+  importance, stated feelings, retrospective and next steps; one final request
+  incorporates mentor replies. No repeated questionnaire or separate AI review.
+- Editing considers all current answers together and applies explicit author
+  corrections before summarizing. Vocabulary is spelling context, not evidence.
+  Observations, the author's interpretations and intentions remain distinct.
+  Missing feelings are not invented; ambiguous numbers/transcription fragments
+  are listed once as points to clarify, never silently repaired.
+- Each generated field carries checked source quotations internally. Incomplete
+  API responses or invalid structures are rejected; draft answers remain saved
+  for retry, without exporting an unfinished update. Raw answers/mentor replies
+  and cleaned answers are preserved in a versioned Markdown source comment for
+  audit, editing and previous-answer reminders, excluded from readable HTML.
+- HTML renders that edited Markdown deterministically, without truncating text
+  or running a second summarizer. The cache version changes with the renderer.
+- Mentor rounds have distinct purposes: a concrete moment and feelings, its
+  personal meaning/need, then only any unresolved forum request. Already clear
+  requests are not reformulated three times.
 - In-progress legacy questionnaires keep their existing question order/answers
   across deployment; a short completion step collects missing traditional
   event answers before the mentor. Saved historical prompts remain parseable.
@@ -123,6 +137,8 @@ Telegram-бот для подготовки к форуму по формата�
 - Export copies the source Markdown and maintains a local README index. Distinct
   updates and revisions have separate snapshot files. Draft answers, diary
   messages, unrelated attachments and other users' updates are excluded.
+- The index identifies the current revision of each source filename; superseded
+  snapshots live in a clearly labelled archive and are not current profile input.
 - Export runs after completion/upload/personal-plan changes, at startup and
   during daily maintenance to backfill retained history and retry failures.
   Repeating an export is idempotent. Export failure does not lose the bot's update.

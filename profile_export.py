@@ -29,13 +29,21 @@ def export_snapshot(directory: Path, filename: str, markdown: str) -> bool:
     changed = not target.exists()
     if changed:
         atomic_write(target, content)
+    # Only one current snapshot per source. Retain old bytes in an explicit archive.
+    previous = [p for p in directory.glob(f"{stem}-*.md") if p != target]
+    if previous:
+        archive = directory / "superseded"
+        archive.mkdir(exist_ok=True)
+        atomic_write(archive / "README.md", "# Заменённые версии\n\nИсторические снимки, заменённые исправленными апдейтами.\nНе использовать как актуальные сведения психологического профиля. Текущие версии — в родительской папке.\n")
+        for path in previous:
+            os.replace(path, archive / path.name)
     names = sorted((p.name for p in directory.glob("*.md") if p.name != "README.md"), reverse=True)
     index = (
         "# Готовые апдейты из ForumUpdateHelperBot\n\n"
         "Автоматические снимки завершённых и загруженных апдейтов Андрея (@utandr).\n"
         "Источник: forum-update-helper; черновики и данные других участников исключены.\n"
         "Дата в имени — дата сохранения в боте; дата форума внутри может быть устаревшей.\n"
-        "Изменённые версии сохраняются отдельно; повторный импорт не создаёт копий.\n"
+        "Ниже только актуальная версия каждого апдейта; заменённые снимки — в superseded/, не использовать их как актуальный контекст.\n"
         "Это исходные апдейты для психологического контекста, без автоматических выводов.\n\n"
         + "\n".join(f"- [{name}]({name})" for name in names) + "\n"
     )
