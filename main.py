@@ -3338,9 +3338,12 @@ async def generate_updates_answer(user: dict[str, Any], question: str) -> str:
             model=OPENAI_MODEL,
             instructions=system,
             input=prompt,
-            max_output_tokens=900,
+            max_output_tokens=2400,
+            reasoning={"effort": "low"},
             text={"verbosity": "low"},
         )
+        if getattr(response, "status", None) != "completed":
+            return ""
         return extract_response_text(response)
 
     try:
