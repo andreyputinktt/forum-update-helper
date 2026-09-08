@@ -49,6 +49,20 @@ Telegram-бот для подготовки к форуму по формата�
 
 ### Voice and audio transcription
 - User answers by voice
+- For the explicitly configured Telegram user ID, transcription reads the
+  existing voice-dictation JSON lexicon without modifying it. Other users
+  receive only the generic forum vocabulary; usernames do not grant access.
+- A bounded set of canonical terms is selected using the current question,
+  the user's current answers and the frozen previous-update context. Configured
+  priority terms (e.g. a frequently misrecognized name) are included when they
+  exist in the dictionary. Raw answers/source paths are not sent as ASR hints.
+- The dictionary is read for each recording so refreshed vocabulary takes
+  effect without restarting the bot. Missing/invalid vocabulary falls back to
+  ordinary transcription with a diagnostic event that contains no private data.
+- Hints bias recognition only when supported by the audio; there is no global
+  replacement of “Джокер” with “Джеклин”, no rewriting of historical updates,
+  and no extra text-generation pass. Audio deletion and profile export rules
+  remain the same.
 
 ### X-Competence update flow
 - User starts update preparation

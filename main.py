@@ -22,6 +22,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from profile_export import export_snapshot
+from transcription_vocabulary import select_terms
 from interview import MENTOR_LIMIT, SPHERE_PAIRS, event_keys, grounded_event_fields, question_specs, traditional_markdown
 
 import dateparser
@@ -70,6 +71,9 @@ OPENAI_HTML_MODEL = os.getenv("OPENAI_HTML_MODEL", OPENAI_MODEL)
 HTML_BRIEF_CACHE_VERSION = "ai-html-brief-v3-dual"
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "ru")
+TRANSCRIPTION_LEXICON_USER_ID = int(os.getenv("TRANSCRIPTION_LEXICON_USER_ID") or "0")
+TRANSCRIPTION_LEXICON_PATH = os.getenv("TRANSCRIPTION_LEXICON_PATH", "")
+TRANSCRIPTION_PRIORITY_TERMS = tuple(term.strip() for term in os.getenv("TRANSCRIPTION_PRIORITY_TERMS", "").split(",") if term.strip())
 OPENAI_REFLECTION_ENABLED = os.getenv("OPENAI_REFLECTION_ENABLED", "true").casefold() not in {
     "0",
     "false",
@@ -4459,7 +4463,7 @@ async def handle_voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         await tg_file.download_to_drive(custom_path=str(audio_path))
-        transcript = await transcribe_audio(audio_path)
+        transcript = await transcribe_audio(audio_path, user)
     except Exception as exc:
         log.exception("audio transcription failed")
         await reply(
@@ -4477,7 +4481,41 @@ async def handle_voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TY
     await route_text(update, context, fresh_user, transcript)
 
 
-async def transcribe_audio(path: Path) -> str:
+def transcription_prompt(user: dict[str, Any] | None = None) -> str:
+    base = (
+        "Русская речь участника бизнес-форума. Термины: форум-группа, "
+        "X-Competence, апдейт, Атланты, Эквиум, К1, Терра, Сколково."
+    )
+    if not user or not TRANSCRIPTION_LEXICON_USER_ID or user.get("telegram_user_id") != TRANSCRIPTION_LEXICON_USER_ID or not TRANSCRIPTION_LEXICON_PATH:
+        return base
+    payload = parse_json_dict(user.get("flow_payload"))
+    context = [str(user.get("forum_group") or ""), str(user.get("business_club") or "")]
+    questions = flow_questions_for_user(user)
+    step = int(user.get("active_step") or 0)
+    current_key = questions[step].key if 0 <= step < len(questions) else ""
+    if current_key:
+        context.append(questions[step].prompt)
+    if user.get("active_flow") == "update_mentor":
+        dialogue = payload.get("mentor_dialogue", [])
+        if dialogue:
+            context.append(str(dialogue[-1].get("question", "")))
+    previous = payload.get("previous_update", {}).get("answers", {})
+    context.append(str(previous.get(current_key, ""))[:3000])
+    if current_key.startswith("retrospective_"):
+        context.append(str(previous.get(current_key.replace("retrospective_", "next_period_", 1), ""))[:2000])
+    context.extend(str(answer)[:400] for answer in payload.get("answers", {}).values())
+    terms = select_terms(Path(TRANSCRIPTION_LEXICON_PATH).expanduser(), "\n".join(context), TRANSCRIPTION_PRIORITY_TERMS)
+    log.info("transcription vocabulary selected user_id=%s count=%s", user["telegram_user_id"], len(terms))
+    if not terms:
+        return base
+    return base + (
+        "\nВ речи могут встречаться следующие имена и названия: " + "; ".join(terms) + ". "
+        "Используй это написание только если оно соответствует аудио. "
+        "Не добавляй слова из списка, если их не произнесли, и не меняй смысл сказанного."
+    )
+
+
+async def transcribe_audio(path: Path, user: dict[str, Any] | None = None) -> str:
     assert _openai is not None
 
     def _call() -> str:
@@ -4486,10 +4524,7 @@ async def transcribe_audio(path: Path) -> str:
                 model=TRANSCRIBE_MODEL,
                 file=fh,
                 language=TRANSCRIBE_LANGUAGE,
-                prompt=(
-                    "Русская речь участника бизнес-форума. Термины: форум-группа, "
-                    "X-Competence, апдейт, Атланты, Эквиум, К1, Терра, Сколково."
-                ),
+                prompt=transcription_prompt(user),
             )
         return str(getattr(result, "text", "")).strip()
 
