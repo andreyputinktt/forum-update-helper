@@ -4327,8 +4327,17 @@ async def compose_edited_update(user: dict[str, Any], answers: dict[str, str], h
         )
         if getattr(response, "status", None) != "completed":
             raise ValueError("Incomplete editorial response")
-        return editorial.validate_editorial(extract_json_object(extract_response_text(response)),
-                                           editorial.source_material(answers, dialogue))
+        sources = editorial.source_material(answers, dialogue)
+        data = editorial.validate_editorial(extract_json_object(extract_response_text(response)), sources)
+        review = _openai.with_options(timeout=75, max_retries=0).responses.create(
+            model=OPENAI_MODEL, instructions=editorial.AUDIT_INSTRUCTIONS,
+            input=json.dumps({"answers": answers, "mentor": dialogue, "candidate": data}, ensure_ascii=False),
+            max_output_tokens=6000, reasoning={"effort": "medium"}, text={"verbosity": "low", "format": {
+                "type": "json_schema", "name": "forum_update_audit", "strict": True, "schema": editorial.audit_schema()}},
+        )
+        if getattr(review, "status", None) != "completed":
+            raise ValueError("Incomplete semantic audit")
+        return editorial.apply_audit(data, extract_json_object(extract_response_text(review)), sources)
 
     data = await asyncio.to_thread(call)
     if header is None:

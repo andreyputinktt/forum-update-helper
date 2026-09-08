@@ -79,6 +79,8 @@ def test_editor_provider_uses_full_sources_and_rejects_truncation(history, monke
     response = SimpleNamespace(status="completed", output_text=json.dumps(data))
     def create(**kwargs):
         calls.append(kwargs)
+        if kwargs["text"]["format"]["name"] == "forum_update_audit":
+            return SimpleNamespace(status="completed", output_text='{"changes": []}')
         return response
     client = SimpleNamespace(responses=SimpleNamespace(create=create))
     monkeypatch.setattr(bot, "_openai", SimpleNamespace(with_options=lambda **kwargs: client))
@@ -90,6 +92,23 @@ def test_editor_provider_uses_full_sources_and_rejects_truncation(history, monke
     response.status = "incomplete"
     with pytest.raises(ValueError, match="Incomplete"):
         asyncio.run(bot.compose_edited_update(user, answers))
+
+
+def test_semantic_audit_correction_requires_grounded_source():
+    answers, dialogue, data = sample()
+    answers["sales"] = "Сложный продукт продавался хуже простого."
+    data["spheres"][0]["retrospective"] = {"text": "Сложный продукт продавался лучше.",
+        "evidence": [{"source": "sales", "quote": answers["sales"]}]}
+    sources = bot.editorial.source_material(answers, dialogue)
+    # Substring evidence alone cannot detect an inverted comparison.
+    bot.editorial.validate_editorial(data, sources)
+    correction = {"section": "Бизнес", "field": "retrospective", "reason": "Перевёрнуто сравнение",
+        "replacement": {"text": "Сложный продукт продавался хуже простого.", "evidence": [{"source": "sales", "quote": answers["sales"]}]}}
+    checked = bot.editorial.apply_audit(data, {"changes": [correction]}, sources)
+    assert "хуже" in checked["spheres"][0]["retrospective"]["text"]
+    correction["replacement"]["evidence"][0]["quote"] = "Придуманная цитата"
+    with pytest.raises(ValueError):
+        bot.editorial.apply_audit(data, {"changes": [correction]}, sources)
 
 
 def test_editing_failure_keeps_draft_and_does_not_export(history, monkeypatch):

@@ -107,6 +107,10 @@ Telegram-бот для подготовки к форуму по формата�
   for retry, without exporting an unfinished update. Raw answers/mentor replies
   and cleaned answers are preserved in a versioned Markdown source comment for
   audit, editing and previous-answer reminders, excluded from readable HTML.
+- A separate semantic audit compares the edited claims against the full original
+  answers and mentor replies, checking negation, comparisons, numbers, attribution,
+  explicit corrections and invented causal links. Its grounded corrections are
+  applied before saving; failed/incomplete audit keeps the draft for retry.
 - HTML renders that edited Markdown deterministically, without truncating text
   or running a second summarizer. The cache version changes with the renderer.
 - Mentor rounds have distinct purposes: a concrete moment and feelings, its
