@@ -107,6 +107,9 @@ Telegram-бот для подготовки к форуму по формата�
   for retry, without exporting an unfinished update. Raw answers/mentor replies
   and cleaned answers are preserved in a versioned Markdown source comment for
   audit, editing and previous-answer reminders, excluded from readable HTML.
+- Rating evidence accepts equivalent explicit numeric forms such as `6/10`
+  and `6 из 10` (including whitespace). The quoted source remains verbatim;
+  a different score or denominator is still rejected during editing and audit.
 - A separate semantic audit compares the edited claims against the full original
   answers and mentor replies, checking negation, comparisons, numbers, attribution,
   explicit corrections and invented causal links. Its grounded corrections are

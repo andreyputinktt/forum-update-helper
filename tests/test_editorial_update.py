@@ -94,6 +94,32 @@ def test_editor_provider_uses_full_sources_and_rejects_truncation(history, monke
         asyncio.run(bot.compose_edited_update(user, answers))
 
 
+@pytest.mark.parametrize("quote,accepted", [
+    ("Оценка 6 из 10.", True),
+    ("Оценка 6 ИЗ\n10.", True),
+    ("Оценка 6 / 10.", True),
+    ("Оценка 6/10.", True),
+    ("Оценка 5 из 10.", False),
+    ("Оценка 6 из 11.", False),
+    ("Оценка 16/10.", False),
+    ("Оценка 6/100.", False),
+    ("Оценка 1,6 из 10.", False),
+    ("Оценка 4–6/10.", False),
+    ("Оценка 6/10,5.", False),
+])
+def test_rating_evidence_accepts_spoken_scale_without_changing_score(quote, accepted):
+    answers, dialogue, data = sample()
+    answers["rating_Моё дело"] = quote
+    data["spheres"][0]["rating"]["evidence"][0]["quote"] = quote
+    sources = bot.editorial.source_material(answers, dialogue)
+    if accepted:
+        checked = bot.editorial.apply_audit(data, {"changes": []}, sources)
+        assert checked["spheres"][0]["rating"]["text"] == "6/10"
+    else:
+        with pytest.raises(ValueError, match="Rating not explicit"):
+            bot.editorial.validate_editorial(data, sources)
+
+
 def test_semantic_audit_correction_requires_grounded_source():
     answers, dialogue, data = sample()
     answers["sales"] = "Сложный продукт продавался хуже простого."

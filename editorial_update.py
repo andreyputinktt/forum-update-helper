@@ -115,8 +115,9 @@ def validate_editorial(data, sources):
             if key == "rating" and value:
                 if not re.fullmatch(r"(?:10|[1-9])/10", value):
                     raise ValueError("Invalid rating")
-                quotes = " ".join(e["quote"] for e in sphere[key]["evidence"])
-                if value not in quotes.replace(" ", ""):
+                score = value.split("/", 1)[0]
+                pattern = rf"(?<![\w.,+\-–—]){score}\s*(?:/|из)\s*10(?!\w|[.,]\d)"
+                if not any(re.search(pattern, e["quote"], re.I) for e in sphere[key]["evidence"]):
                     raise ValueError("Rating not explicit in evidence")
     for key in REQUEST_FIELDS:
         if key not in data.get("request", {}):
