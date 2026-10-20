@@ -46,6 +46,10 @@ Telegram-бот для подготовки к форуму по формата�
 
 ### Message pacing
 - Bot sends consecutive messages
+- Reply and notification length limits count visible HTML text, not tag or URL
+  characters. Truncation preserves complete links, entities and closing tags,
+  including nested formatting and emoji. Short rendered lists are sent intact
+  even when their HTML source exceeds the text limit.
 
 ### Voice and audio transcription
 - User answers by voice

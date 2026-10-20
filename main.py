@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -404,6 +405,47 @@ def clip(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def clip_message(text: str, parse_mode: str | None, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+    if parse_mode != ParseMode.HTML:
+        return clip(text, limit)
+    text = text.strip()
+    if len(text.encode("utf-16-le")) // 2 <= limit:
+        return text
+
+    class HTMLClipper(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+            self.tags = []
+            self.remaining = max(0, limit - 1)
+            self.total = 0
+
+        def handle_starttag(self, tag, attrs):
+            if self.remaining:
+                self.parts.append(self.get_starttag_text())
+                self.tags.append(tag)
+
+        def handle_endtag(self, tag):
+            if self.tags and self.tags[-1] == tag:
+                self.parts.append(f"</{self.tags.pop()}>")
+
+        def handle_data(self, data):
+            encoded = data.encode("utf-16-le")
+            units = len(encoded) // 2
+            self.total += units
+            # Decode only complete code points, never half an emoji surrogate pair.
+            prefix = encoded[:self.remaining * 2].decode("utf-16-le", errors="ignore")
+            self.parts.append(html.escape(prefix, quote=False))
+            self.remaining = max(0, self.remaining - units)
+
+    parser = HTMLClipper()
+    parser.feed(text)
+    parser.close()
+    if parser.total <= limit:
+        return text
+    return "".join(parser.parts) + "".join(f"</{tag}>" for tag in reversed(parser.tags)) + "…"
 
 
 def format_transcript_text(transcript: str, sentence_group: int = 2) -> str:
@@ -1185,7 +1227,7 @@ async def safe_send(
             chat_id,
             lambda: context.bot.send_message(
                 chat_id=chat_id,
-                text=clip(text),
+                text=clip_message(text, parse_mode),
                 parse_mode=parse_mode,
                 **kwargs,
             ),
@@ -1204,7 +1246,7 @@ async def reply(update: Update, text: str, **kwargs: Any) -> None:
     await spaced_bot_send(
         chat_id,
         lambda: update.effective_message.reply_text(
-            clip(text),
+            clip_message(text, parse_mode),
             parse_mode=parse_mode,
             **kwargs,
         ),

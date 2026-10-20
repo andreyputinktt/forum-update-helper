@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +41,51 @@ def test_two_completions_keep_old_link_and_distinct_files(history):
     assert bot.latest_update_markdown(second, item["selector"]) == ("# first", item["filename"])
     assert len(item["selector"]) + len("upd_html_") <= 64
     assert len(list((root / "profile").glob("forum-update-*.md"))) == 2
+
+
+def test_html_transports_preserve_history_links_and_truncate_visible_text(history, monkeypatch):
+    store, _ = history
+    for index in range(10):
+        bot.save_completed_update(store.get_user(123), f"# update {index}")
+    sent = []
+
+    async def send(text, **kwargs):
+        sent.append(text)
+
+    async def immediate(_chat_id, call):
+        return await call()
+
+    monkeypatch.setattr(bot, "spaced_bot_send", immediate)
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123),
+        effective_message=SimpleNamespace(reply_text=send),
+    )
+    user = store.get_user(123)
+    asyncio.run(bot.show_updates_list(update, user))
+    root = ET.fromstring("<root>" + sent[-1] + "</root>")
+    assert len(root.findall(".//a")) == 40
+    for item in bot.stored_update_items(user):
+        assert bot.update_action_deeplink("html", item["selector"]) in sent[-1]
+
+    context = SimpleNamespace(bot=SimpleNamespace(send_message=send))
+    texts = [
+        sent[-1],
+        '<b><a href="https://example.com/?a=1&amp;b=2">'
+        + "😀 &amp; текст " * 1000 + "</a></b>",
+    ]
+    for text in texts:
+        asyncio.run(bot.reply(update, text))
+        reply_text = sent[-1]
+        assert asyncio.run(bot.safe_send(context, 123, text))
+        assert sent[-1] == reply_text
+        root = ET.fromstring("<root>" + reply_text + "</root>")
+        visible = "".join(root.itertext())
+        assert len(visible.encode("utf-16-le")) // 2 <= bot.TELEGRAM_TEXT_LIMIT
+        if text == texts[0]:
+            assert reply_text == text
+        else:
+            assert visible.endswith("…")
+            assert root.find(".//a").attrib["href"] == "https://example.com/?a=1&b=2"
 
 
 def test_old_links_survive_restart_and_mtime_changes(history):
