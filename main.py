@@ -502,7 +502,7 @@ def time_minus_minutes(value: time, minutes: int) -> time:
     return shifted.timetz()
 
 
-def parse_forum_date(value: str, base: date | None = None) -> date | None:
+def parse_forum_date(value: str, base: date | None = None, *, prefer_future: bool = True) -> date | None:
     value = value.strip()
     if not value:
         return None
@@ -527,11 +527,11 @@ def parse_forum_date(value: str, base: date | None = None) -> date | None:
             parsed = date(base_date.year, month, day)
         except ValueError:
             return None
-        if parsed < base_date:
+        if prefer_future and parsed < base_date:
             parsed = date(base_date.year + 1, month, day)
         return parsed
     settings = {
-        "PREFER_DATES_FROM": "future",
+        "PREFER_DATES_FROM": "future" if prefer_future else "current_period",
         "RELATIVE_BASE": datetime.combine(base_date, time(12, 0), tzinfo=TZ),
         "RETURN_AS_TIMEZONE_AWARE": False,
     }
@@ -1641,6 +1641,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data or ""
     store.log_interaction(user["telegram_user_id"], f"callback:{data.split(':', 1)[0]}")
 
+    if user.get("state") == "update:date" and data != "flow:cancel" and data.startswith(("flow:", "mentor:")):
+        await ask_update_date(update, user)
+        return
+
     if data.startswith("club:"):
         await handle_onboarding_text(update, context, data.split(":", 1)[1])
     elif data.startswith("onboard:"):
@@ -1778,6 +1782,10 @@ async def route_text(
 
     if user.get("state") == "awaiting_next_forum_date":
         await handle_next_forum_date(update, context, user, text)
+        return
+
+    if user.get("state") == "update:date":
+        await handle_update_date(update, user, text)
         return
 
     if user.get("state") == "diary:prompt":
@@ -2389,6 +2397,7 @@ def stored_update_items(user: dict[str, Any]) -> list[dict[str, Any]]:
                 "selector": update_selector(path.name),
                 "filename": path.name,
                 "date": datetime.fromtimestamp(update_file_timestamp(path), TZ).strftime("%d.%m.%Y"),
+                "forum_date": parse_update_metadata(read_markdown_file_text(path)).get("Дата форума", ""),
                 "path": path,
             }
         )
@@ -2402,6 +2411,7 @@ def stored_update_items(user: dict[str, Any]) -> list[dict[str, Any]]:
                 "selector": update_selector(latest_filename),
                 "filename": latest_filename,
                 "date": latest_at,
+                "forum_date": parse_update_metadata(latest_markdown).get("Дата форума", ""),
                 "path": None,
             },
         )
@@ -2423,8 +2433,10 @@ def update_action_deeplink(action: str, selector: str) -> str:
 
 def update_item_line(index: int, item: dict[str, Any]) -> str:
     selector = str(item["selector"])
+    forum_date = str(item.get("forum_date") or "")
+    date_label = f"Форум {forum_date} · сохранён {item['date']}" if forum_date else f"Сохранён {item['date']}"
     return (
-        f"<b>{esc(item['date'])}</b>\n"
+        f"<b>{esc(date_label)}</b>\n"
         f' - Скачать: <a href="{update_action_deeplink("md", selector)}">[.md]</a> (полная, для ИИ) '
         f'<a href="{update_action_deeplink("html", selector)}">[.html]</a> (короткая, для чтения)\n'
         f' - <a href="{update_action_deeplink("edit", selector)}">Редактировать</a>\n'
@@ -3251,7 +3263,7 @@ def previous_update_context(user: dict[str, Any]) -> dict[str, Any]:
             continue
         answers = parse_update_markdown_answers(markdown, UPDATE_QUESTIONS + CLASSIC_UPDATE_QUESTIONS + UNIFIED_UPDATE_QUESTIONS)
         answers = compatible_update_answers(answers)
-        return {"answers": answers, "filename": filename, "date": item["date"]}
+        return {"answers": answers, "filename": filename, "date": item.get("forum_date") or item["date"]}
     return {"answers": {}, "filename": "", "date": ""}
 
 
@@ -3686,7 +3698,30 @@ async def begin_update_flow(
         "чтобы его кнопки не попадали в ответы.",
         reply_markup=ReplyKeyboardRemove(),
     )
-    await ask_current_question(update, user, questions)
+    user = store.update_user(user["telegram_user_id"], state="update:date")
+    await ask_update_date(update, user)
+
+
+async def ask_update_date(update: Update, user: dict[str, Any]) -> None:
+    await reply(
+        update,
+        "<b>На какую дату форума готовим этот апдейт?</b>\n\n"
+        "Напиши дату, например <code>20.10.2026</code>, или скажи голосом. "
+        "Можно указать прошедшую дату. Это дата апдейта, а не следующего напоминания.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+async def handle_update_date(update: Update, user: dict[str, Any], text: str) -> None:
+    forum_date = parse_forum_date(text, prefer_future=False)
+    if forum_date is None:
+        await reply(update, "Не распознал дату. Напиши её с годом, например <code>20.10.2026</code>.")
+        return
+    payload = store.payload(user)
+    payload["forum_date"] = forum_date.isoformat()
+    user = store.update_user(user["telegram_user_id"], state=None, flow_payload=json.dumps(payload, ensure_ascii=False))
+    await reply(update, f"Дата этого апдейта: <b>{forum_date.strftime('%d.%m.%Y')}</b>.")
+    await ask_current_question(update, user, update_questions_for_user(user))
 
 
 async def start_health_flow(update: Update, user: dict[str, Any]) -> None:
@@ -3925,6 +3960,11 @@ async def record_mentor_answer(update: Update, user: dict[str, Any], text: str) 
 
 async def handle_mentor_action(update: Update, context: ContextTypes.DEFAULT_TYPE, user: dict[str, Any], data: str) -> None:
     if user.get("active_flow") != "update_mentor":
+        if data == "mentor:save" and not user.get("active_flow") and not user.get("state"):
+            await reply(update, "Активного черновика нет. Вот сохранённые апдейты:")
+            await show_updates_list(update, user)
+        else:
+            await reply(update, "Эта кнопка уже неактуальна. Продолжи текущий шаг или открой «Мои апдейты».")
         return
     payload = store.payload(user)
     dialogue = payload.get("mentor_dialogue", [])
@@ -4104,7 +4144,7 @@ def build_update_markdown(
     questions: list[Question] | None = None,
     event_fields: dict[str, Any] | None = None,
 ) -> str:
-    forum_date = format_forum_date(user.get("next_forum_date")) or "не указана"
+    forum_date = format_forum_date(store.payload(user).get("forum_date") or user.get("next_forum_date")) or "не указана"
     methodology = methodology_for_user(user)
     selected_questions = questions or update_questions_for_user(user)
     lines = [

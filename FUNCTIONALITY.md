@@ -77,6 +77,14 @@ Telegram-бот для подготовки к форуму по формата�
 - User keeps update files
 
 ### Unified X-Competence interview and mentor
+- Before each new or edited interview, ask which forum date the update belongs
+  to. Store the explicit answer with the draft, separately from the next-forum
+  reminder date; accept past dates and never roll a yearless update date forward.
+  Date entry survives restart and stale interview buttons cannot skip it.
+  Saved history distinguishes the forum date from the date the file was saved.
+- After an interview has ended, its old save button shows the saved history
+  instead of silently doing nothing or creating a duplicate. During another
+  active flow, explain that the old button is no longer applicable.
 - New X-Competence sessions use one 18-step interview, grouped by sphere:
   rating, meaningful positive event, meaningful difficult event, retrospective,
   next period; then main request, situation/attempts, and experience requested
