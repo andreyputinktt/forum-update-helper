@@ -204,6 +204,8 @@ def test_edit_previous_update_preloads_answers(tmp_path, monkeypatch):
     payload = test_store.payload(user)
     assert payload["mode"] == "edit"
     assert payload["answers"][first_question.key] == "старый ответ"
+    assert user["state"] == "update:date"
+    bot.asyncio.run(bot.handle_update_date(None, user, "20.10.26"))
     assert "Текущий ответ" in replies[-1]
 
 
@@ -681,7 +683,7 @@ def test_update_item_line_uses_deeplinks_for_actions():
         {"selector": "0", "filename": "forum-update.md", "date": "31.05.2026"},
     )
 
-    assert line.startswith("<b>31.05.2026</b>\n - Скачать:")
+    assert line.startswith("<b>Сохранён 31.05.2026</b>\n - Скачать:")
     assert "forum-update.md" not in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_md_0"' in line
     assert 'href="https://t.me/ForumUpdateHelperBot?start=upd_html_0"' in line

@@ -53,6 +53,7 @@ def test_previous_answers_are_frozen_group_scoped_and_not_prefilled(interview):
     foreign_group = {**user, "forum_group": "Другой форум"}
     user = bot.save_completed_update(user, bot.build_update_markdown(foreign_group, {"rating_Моё дело": "Чужой контекст"}))
     asyncio.run(bot.begin_update_flow(None, user))
+    asyncio.run(bot.handle_update_date(None, store.get_user(123), "20.10.26"))
     user = store.get_user(123)
     payload = store.payload(user)
     assert payload["answers"] == {}
@@ -172,6 +173,7 @@ def test_structuring_rejects_invented_feelings(interview, monkeypatch):
 def test_complete_unified_interview_routes_all_answers_to_both_views(interview):
     store, _, replies = interview
     asyncio.run(bot.begin_update_flow(None, store.get_user(123)))
+    asyncio.run(bot.route_text(None, None, store.get_user(123), "20.10.26"))
     for question in bot.UNIFIED_UPDATE_QUESTIONS:
         user = store.get_user(123)
         assert bot.flow_questions_for_user(user)[user["active_step"]].key == question.key
@@ -209,3 +211,78 @@ def test_editing_legacy_markdown_preserves_merged_request_details(interview):
     asyncio.run(bot.begin_update_flow(None, user, edit_previous=True, source_selector=bot.update_selector(user["last_update_filename"])))
     answer = store.payload(store.get_user(123))["answers"]["main_request_details"]
     assert "Цена вопроса" in answer and "Мои попытки" in answer
+
+
+@pytest.mark.parametrize("methodology", [bot.METHODOLOGY_CLASSIC, bot.METHODOLOGY_STRATEGY])
+def test_update_date_is_explicit_persisted_and_separate_from_reminder(interview, methodology):
+    store, _, replies = interview
+    user = store.update_user(123, methodology=methodology, next_forum_date="2026-09-08")
+    asyncio.run(bot.begin_update_flow(None, user))
+    assert "На какую дату форума" in replies[-1][0]
+    reopened = bot.Store(store.db_path)
+    try:
+        assert reopened.get_user(123)["state"] == "update:date"
+    finally:
+        reopened.conn.close()
+    asyncio.run(bot.route_text(None, None, store.get_user(123), "31.02.2026"))
+    assert store.get_user(123)["state"] == "update:date"
+    asyncio.run(bot.route_text(None, None, store.get_user(123), "20.10.26"))
+    user = store.get_user(123)
+    assert user["state"] is None and user["active_step"] == 0
+    assert store.payload(user)["answers"] == {}
+    assert user["next_forum_date"] == "2026-09-08"
+    assert store.payload(user)["forum_date"] == "2026-10-20"
+    assert "- Дата форума: 20.10.2026" in bot.build_update_markdown(user, {})
+    if methodology == bot.METHODOLOGY_STRATEGY:
+        asyncio.run(bot.finish_flow(None, None, user))
+        assert store.payload(store.get_user(123))["forum_date"] == "2026-10-20"
+
+
+def test_update_date_does_not_roll_past_day_into_next_year():
+    from datetime import date
+    assert bot.parse_forum_date("20.10", base=date(2026, 10, 21), prefer_future=False) == date(2026, 10, 20)
+    assert bot.parse_forum_date("вчера", base=date(2026, 10, 21), prefer_future=False) == date(2026, 10, 20)
+
+
+@pytest.mark.parametrize("data", ["flow:next", "flow:back", "flow:rating:7", "flow:reuse:0", "mentor:save"])
+def test_old_buttons_cannot_skip_update_date(interview, monkeypatch, data):
+    store, _, replies = interview
+    asyncio.run(bot.begin_update_flow(None, store.get_user(123)))
+    before = store.get_user(123)
+    monkeypatch.setattr(store, "ensure_user", lambda update: store.get_user(123))
+    async def answer():
+        pass
+    update = SimpleNamespace(callback_query=SimpleNamespace(data=data, answer=answer))
+    asyncio.run(bot.handle_callback(update, None))
+    after = store.get_user(123)
+    assert after["state"] == "update:date"
+    assert after["active_step"] == before["active_step"]
+    assert after["flow_payload"] == before["flow_payload"]
+    assert "На какую дату форума" in replies[-1][0]
+
+
+def test_repeated_save_shows_history_without_duplicate_or_changing_other_flow(interview):
+    store, _, replies = interview
+    user = store.set_flow(123, "update_mentor", 0, {"answers": {"main_request_core": "Мой вопрос"}})
+    asyncio.run(bot.handle_mentor_action(None, None, user, "mentor:save"))
+    saved = store.get_user(123)
+    asyncio.run(bot.handle_mentor_action(None, None, saved, "mentor:save"))
+    assert len(bot.stored_update_items(store.get_user(123))) == 1
+    assert saved["last_update_filename"] == store.get_user(123)["last_update_filename"]
+    assert any("Активного черновика нет" in text for text, _ in replies)
+    assert bot.update_selector(saved["last_update_filename"]) in replies[-1][0]
+    user = store.set_flow(123, "health", 2, {"answers": {"q": "ответ"}})
+    asyncio.run(bot.handle_mentor_action(None, None, user, "mentor:save"))
+    assert "неактуальна" in replies[-1][0]
+    assert store.get_user(123)["flow_payload"] == user["flow_payload"]
+    assert store.get_user(123)["active_flow"] == "health"
+
+
+def test_history_labels_forum_date_separately_from_save_date(interview):
+    store, _, _ = interview
+    user = store.get_user(123)
+    user = bot.save_completed_update(user, "# Форум-апдейт — Мой форум\n\n- Дата форума: 20.10.2026\n\n## Я\nТекст")
+    item = bot.stored_update_items(user)[0]
+    assert item["forum_date"] == "20.10.2026"
+    assert f"Форум 20.10.2026 · сохранён {item['date']}" in bot.update_item_line(0, item)
+    assert bot.previous_update_context(user)["date"] == "20.10.2026"
