@@ -154,6 +154,8 @@ Owner snapshot exports go to about-aputin/sources/forum-updates. Replaced snapsh
   updates. Other attachments retain the existing file-storage behavior.
 
 ### Personal profile export (explicit owner opt-in)
+
+The snapshot index excludes README, AGENTS, CLAUDE and DEV instruction files.
 - The configured Telegram user ID (Andrey's `utandr`, verified during setup)
   exports completed/uploaded Markdown updates to the configured profile folder
   `about-aputin/sources/forum-updates/`. Username changes do not transfer access.

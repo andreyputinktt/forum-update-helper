@@ -42,7 +42,7 @@ def export_snapshot(directory: Path, filename: str, markdown: str, archive_direc
         archive.mkdir(parents=True, exist_ok=True)
         for path in previous:
             os.replace(path, archive / path.name)
-    names = sorted((p.name for p in directory.glob("*.md") if p.name != "README.md"), reverse=True)
+    names = sorted((p.name for p in directory.glob("*.md") if p.name not in {"README.md", "AGENTS.md", "CLAUDE.md", "DEV.md"}), reverse=True)
     index = (
         "# Готовые апдейты из ForumUpdateHelperBot\n\n"
         "Автоматические снимки завершённых и загруженных апдейтов Андрея (@utandr).\n"

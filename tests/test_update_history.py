@@ -151,9 +151,14 @@ def test_export_reuses_identical_manual_snapshot_without_recreating_duplicate(tm
     directory.mkdir(parents=True)
     canonical = directory / "2026-08-26.md"
     canonical.write_text("# exact snapshot\n", encoding="utf-8")
+    for name in ("AGENTS.md", "CLAUDE.md", "DEV.md"):
+        (directory / name).write_text("@README.md\n", encoding="utf-8")
     assert not export_snapshot(directory, "forum-update-20260826.md", "# exact snapshot", tmp_path / "archive/forum-updates")
     assert list(directory.glob("forum-update-*.md")) == []
     assert canonical.read_text(encoding="utf-8") == "# exact snapshot\n"
+    index = (directory / "README.md").read_text()
+    assert canonical.name in index
+    assert not any(name in index for name in ("AGENTS.md", "CLAUDE.md", "DEV.md"))
 
 
 def test_failed_profile_export_retries_without_losing_update(history, monkeypatch):
