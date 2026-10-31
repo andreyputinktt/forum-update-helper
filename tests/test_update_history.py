@@ -144,21 +144,46 @@ def test_profile_exports_only_owner_and_preserves_revisions(history):
     assert all(f.name in (root / "profile/README.md").read_text() for f in files)
 
 
-def test_export_reuses_identical_manual_snapshot_without_recreating_duplicate(tmp_path):
+def test_export_keeps_source_identity_across_edit_and_restart(tmp_path):
     from profile_export import export_snapshot
+    import hashlib
 
     directory = tmp_path / "sources/forum-updates"
     directory.mkdir(parents=True)
-    canonical = directory / "2026-08-26.md"
-    canonical.write_text("# exact snapshot\n", encoding="utf-8")
+    filename = "forum-update-20260826-1316.md"
+    content = "# exact snapshot\n"
+    digest = hashlib.sha256(content.encode()).hexdigest()[:16]
+    canonical = directory / f"{Path(filename).stem}-{digest}.md"
+    canonical.write_text(content, encoding="utf-8")
     for name in ("AGENTS.md", "CLAUDE.md", "DEV.md"):
         (directory / name).write_text("@README.md\n", encoding="utf-8")
-    assert not export_snapshot(directory, "forum-update-20260826.md", "# exact snapshot", tmp_path / "archive/forum-updates")
-    assert list(directory.glob("forum-update-*.md")) == []
-    assert canonical.read_text(encoding="utf-8") == "# exact snapshot\n"
+    archive = tmp_path / "archive/forum-updates"
+    assert not export_snapshot(directory, filename, content, archive)
+    assert export_snapshot(directory, filename, "# corrected snapshot", archive)
+    assert not export_snapshot(directory, filename, "# corrected snapshot", archive)
+    active = list(directory.glob("forum-update-*.md"))
+    assert len(active) == 1 and active[0].read_text() == "# corrected snapshot\n"
+    assert (archive / canonical.name).read_text() == content
     index = (directory / "README.md").read_text()
-    assert canonical.name in index
+    assert active[0].name in index and canonical.name not in index
     assert not any(name in index for name in ("AGENTS.md", "CLAUDE.md", "DEV.md"))
+
+
+def test_export_does_not_merge_unrelated_sources_with_equal_text(tmp_path):
+    from profile_export import export_snapshot
+
+    directory = tmp_path / "current"
+    directory.mkdir()
+    manual = directory / "2026-08-26.md"
+    manual.write_text("# equal text\n")
+    archive = tmp_path / "archive"
+    export_snapshot(directory, "forum-update-20260826-first.md", "# equal text", archive)
+    export_snapshot(directory, "forum-update-20260826-second.md", "# equal text", archive)
+    export_snapshot(directory, "forum-update-20260826-first.md", "# first corrected", archive)
+    assert manual.read_text() == "# equal text\n"
+    assert len(list(directory.glob("forum-update-*-first-*.md"))) == 1
+    second = list(directory.glob("forum-update-*-second-*.md"))
+    assert len(second) == 1 and second[0].read_text() == "# equal text\n"
 
 
 def test_failed_profile_export_retries_without_losing_update(history, monkeypatch):

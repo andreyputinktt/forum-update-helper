@@ -164,6 +164,9 @@ The snapshot index excludes README, AGENTS, CLAUDE and DEV instruction files.
   messages, unrelated attachments and other users' updates are excluded.
 - The index identifies the current revision of each source filename; superseded
   snapshots live in a clearly labelled archive and are not current profile input.
+- Snapshot identity is the source filename, never text equality. Independent
+  updates with identical text remain independent; edits and startup backfills
+  preserve that identity and keep only its current revision active.
 - Export runs after completion/upload/personal-plan changes, at startup and
   during daily maintenance to backfill retained history and retry failures.
   Repeating an export is idempotent. Export failure does not lose the bot's update.
