@@ -157,7 +157,7 @@ Markdown-файл апдейта (`.md`) — единственный source of 
 
 ```env
 PROFILE_EXPORT_USER_ID=195130338
-PROFILE_EXPORT_DIR=/home/a.putin/GIT/about-aputin/forum-updates/from-bot
+PROFILE_EXPORT_DIR=/home/a.putin/GIT/about-aputin/sources/forum-updates/from-bot
 ```
 
 ID проверен по `utandr` в базе сервиса; username не является ключом доступа.

@@ -51,6 +51,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 UPDATES_DIR = DATA_DIR / "updates"
 PROFILE_EXPORT_USER_ID = int(os.getenv("PROFILE_EXPORT_USER_ID") or "0")
 PROFILE_EXPORT_DIR = os.getenv("PROFILE_EXPORT_DIR", "")
+PROFILE_ARCHIVE_DIR = os.getenv("PROFILE_ARCHIVE_DIR", "")
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "ForumUpdateHelperBot").removeprefix("@")
@@ -2598,7 +2599,9 @@ def export_profile_update(user: dict[str, Any], filename: str, markdown: str) ->
     if not PROFILE_EXPORT_DIR or not PROFILE_EXPORT_USER_ID or user["telegram_user_id"] != PROFILE_EXPORT_USER_ID:
         return
     try:
-        changed = export_snapshot(Path(PROFILE_EXPORT_DIR).expanduser(), filename, markdown)
+        directory = Path(PROFILE_EXPORT_DIR).expanduser()
+        archive = Path(PROFILE_ARCHIVE_DIR).expanduser() if PROFILE_ARCHIVE_DIR else directory.parent.parent / "archive" / "forum-updates"
+        changed = export_snapshot(directory, filename, markdown, archive)
         if changed:
             log.info("profile update exported user_id=%s update=%s", user["telegram_user_id"], update_selector(filename))
     except OSError as exc:

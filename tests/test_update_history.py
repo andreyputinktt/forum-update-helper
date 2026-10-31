@@ -20,6 +20,7 @@ def history(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(bot, "PROFILE_EXPORT_USER_ID", 123)
     monkeypatch.setattr(bot, "PROFILE_EXPORT_DIR", str(tmp_path / "profile"))
+    monkeypatch.setattr(bot, "PROFILE_ARCHIVE_DIR", str(tmp_path / "archive/forum-updates"))
     monkeypatch.setattr(bot, "_openai", None)
     for user_id in (123, 456):
         store.conn.execute(
@@ -136,7 +137,7 @@ def test_profile_exports_only_owner_and_preserves_revisions(history):
     files = list((root / "profile").glob("forum-update-*.md"))
     assert len(files) == 1
     contents = [f.read_text() for f in files]
-    archived = list((root / "profile/superseded").glob("forum-update-*.md"))
+    archived = list((root / "archive/forum-updates").glob("forum-update-*.md"))
     assert len(archived) == 1 and archived[0].read_text() == "# first\n"
     assert any("План" in text for text in contents)
     assert all("foreign" not in text for text in contents)

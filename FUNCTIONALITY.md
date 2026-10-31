@@ -11,6 +11,10 @@ Telegram-бот для подготовки к форуму по формата�
 
 ## Current Behavior
 
+### Canonical profile data contract
+Owner snapshot exports go to about-aputin/sources/forum-updates. Replaced snapshots are retained in about-aputin/archive/forum-updates; the source directory index includes only current visible revisions. A shared sources directory must preserve unrelated manually maintained snapshots.
+
+
 ### Diary mode setup
 - User enables diary mode
 - User configures diary reminder
@@ -152,7 +156,7 @@ Telegram-бот для подготовки к форуму по формата�
 ### Personal profile export (explicit owner opt-in)
 - The configured Telegram user ID (Andrey's `utandr`, verified during setup)
   exports completed/uploaded Markdown updates to the configured profile folder
-  `about-aputin/forum-updates/from-bot/`. Username changes do not transfer access.
+  `about-aputin/sources/forum-updates/`. Username changes do not transfer access.
 - Export copies the source Markdown and maintains a local README index. Distinct
   updates and revisions have separate snapshot files. Draft answers, diary
   messages, unrelated attachments and other users' updates are excluded.

@@ -19,7 +19,7 @@ def atomic_write(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def export_snapshot(directory: Path, filename: str, markdown: str) -> bool:
+def export_snapshot(directory: Path, filename: str, markdown: str, archive_directory: Path) -> bool:
     """Keep immutable revisions and rebuild only our dedicated directory's index."""
     content = markdown.lstrip("\ufeff").strip() + "\n"
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
@@ -32,9 +32,8 @@ def export_snapshot(directory: Path, filename: str, markdown: str) -> bool:
     # Only one current snapshot per source. Retain old bytes in an explicit archive.
     previous = [p for p in directory.glob(f"{stem}-*.md") if p != target]
     if previous:
-        archive = directory / "superseded"
-        archive.mkdir(exist_ok=True)
-        atomic_write(archive / "README.md", "# Заменённые версии\n\nИсторические снимки, заменённые исправленными апдейтами.\nНе использовать как актуальные сведения психологического профиля. Текущие версии — в родительской папке.\n")
+        archive = archive_directory
+        archive.mkdir(parents=True, exist_ok=True)
         for path in previous:
             os.replace(path, archive / path.name)
     names = sorted((p.name for p in directory.glob("*.md") if p.name != "README.md"), reverse=True)
@@ -43,7 +42,7 @@ def export_snapshot(directory: Path, filename: str, markdown: str) -> bool:
         "Автоматические снимки завершённых и загруженных апдейтов Андрея (@utandr).\n"
         "Источник: forum-update-helper; черновики и данные других участников исключены.\n"
         "Дата в имени — дата сохранения в боте; дата форума внутри может быть устаревшей.\n"
-        "Ниже только актуальная версия каждого апдейта; заменённые снимки — в superseded/, не использовать их как актуальный контекст.\n"
+        "Ниже только актуальная версия каждого апдейта; заменённые снимки хранятся отдельно в archive/forum-updates, не использовать их как актуальный контекст.\n"
         "Это исходные апдейты для психологического контекста, без автоматических выводов.\n\n"
         "В новых файлах анализировать видимую редакцию. Скрытый блок forum-update-source-v1 содержит сырьё, в том числе исправленные ошибки распознавания; это не самостоятельные факты профиля.\n\n"
         + "\n".join(f"- [{name}]({name})" for name in names) + "\n"
