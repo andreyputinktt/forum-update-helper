@@ -144,6 +144,18 @@ def test_profile_exports_only_owner_and_preserves_revisions(history):
     assert all(f.name in (root / "profile/README.md").read_text() for f in files)
 
 
+def test_export_reuses_identical_manual_snapshot_without_recreating_duplicate(tmp_path):
+    from profile_export import export_snapshot
+
+    directory = tmp_path / "sources/forum-updates"
+    directory.mkdir(parents=True)
+    canonical = directory / "2026-08-26.md"
+    canonical.write_text("# exact snapshot\n", encoding="utf-8")
+    assert not export_snapshot(directory, "forum-update-20260826.md", "# exact snapshot", tmp_path / "archive/forum-updates")
+    assert list(directory.glob("forum-update-*.md")) == []
+    assert canonical.read_text(encoding="utf-8") == "# exact snapshot\n"
+
+
 def test_failed_profile_export_retries_without_losing_update(history, monkeypatch):
     store, root = history
     exporter = bot.export_snapshot

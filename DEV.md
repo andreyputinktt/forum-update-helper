@@ -119,7 +119,7 @@ mentor и clean_answers; он исключён из HTML и контекста �
 `data/repairs/USER_ID/STEM/`, исходный Markdown и прежний HTML сохраняются рядом.
 После вычитки candidate.md и candidate.html команда с `--apply` сверяет хэши,
 заменяет выбранный файл под тем же ID, обновляет SQLite/HTML-кэш и экспорт профиля.
-Другие апдейты не затрагиваются. Старые снимки экспорта переходят в `superseded/`
+Другие апдейты не затрагиваются. Старые снимки экспорта переходят в `about-aputin/archive/forum-updates/`
 с явной пометкой; корневой README перечисляет только текущие версии.
 
 Регрессии: `tests/test_unified_interview.py` — обе методики, legacy-сценарии,
@@ -157,7 +157,8 @@ Markdown-файл апдейта (`.md`) — единственный source of 
 
 ```env
 PROFILE_EXPORT_USER_ID=195130338
-PROFILE_EXPORT_DIR=/home/a.putin/GIT/about-aputin/sources/forum-updates/from-bot
+PROFILE_EXPORT_DIR=/home/a.putin/GIT/about-aputin/sources/forum-updates
+PROFILE_ARCHIVE_DIR=/home/a.putin/GIT/about-aputin/archive/forum-updates
 ```
 
 ID проверен по `utandr` в базе сервиса; username не является ключом доступа.

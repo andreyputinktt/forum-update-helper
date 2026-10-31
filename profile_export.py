@@ -26,6 +26,12 @@ def export_snapshot(directory: Path, filename: str, markdown: str, archive_direc
     stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(filename).stem)
     target = directory / f"{stem}-{digest}.md"
     directory.mkdir(parents=True, exist_ok=True)
+    # A migrated manual snapshot may already hold these exact bytes under its dated name.
+    if not target.exists():
+        for existing in sorted(directory.glob("*.md")):
+            if existing.name != "README.md" and existing.read_text(encoding="utf-8") == content:
+                target = existing
+                break
     changed = not target.exists()
     if changed:
         atomic_write(target, content)
