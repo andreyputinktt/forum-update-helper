@@ -59,7 +59,8 @@ def test_previous_answers_are_frozen_group_scoped_and_not_prefilled(interview):
     assert payload["answers"] == {}
     assert payload["previous_update"]["answers"]["rating_Моё дело"] == "6/10 <было>"
     assert "&lt;было&gt;" in replies[-1][0]
-    assert "Чужой контекст" not in replies[-1][0]
+    assert "Чужой контекст" in replies[-1][0]
+    assert "Другой форум" in replies[-1][0]
     bot.save_completed_update(user, bot.build_update_markdown(user, {"rating_Моё дело": "9/10"}))
     asyncio.run(bot.ask_current_question(None, store.get_user(123), bot.UNIFIED_UPDATE_QUESTIONS))
     assert "6/10 &lt;было&gt;" in replies[-1][0]
@@ -286,3 +287,99 @@ def test_history_labels_forum_date_separately_from_save_date(interview):
     assert item["forum_date"] == "20.10.2026"
     assert f"Форум 20.10.2026 · сохранён {item['date']}" in bot.update_item_line(0, item)
     assert bot.previous_update_context(user)["date"] == "20.10.2026"
+
+
+def test_previous_sources_use_forum_date_not_upload_order_and_stay_private(interview):
+    store, _, replies = interview
+    for group, forum_date, answer in [
+        ("Мой форум", "05.11.2026", "Свежий свой"),
+        ("Свежий другой", "04.11.2026", "Свежий другой ответ"),
+        ("Поздно загруженный", "01.09.2026", "Старый ответ"),
+        ("Мой форум", "01.08.2026", "Старый свой"),
+    ]:
+        user = store.get_user(123)
+        markdown = bot.build_update_markdown({**user, "forum_group": group}, {"rating_Моё дело": answer})
+        markdown = markdown.replace("01.10.2026", forum_date)
+        bot.save_completed_update(user, markdown)
+    stranger = store.update_user(456, forum_group="Чужая приватная группа", next_forum_date="2026-11-06")
+    bot.save_completed_update(stranger, bot.build_update_markdown(stranger, {"rating_Моё дело": "Секрет"}))
+    asyncio.run(bot.begin_update_flow(None, store.get_user(123)))
+    payload = store.payload(store.get_user(123))
+    assert payload["previous_update"]["answers"]["rating_Моё дело"] == "Свежий свой"
+    assert payload["other_previous_update"]["group"] == "Свежий другой"
+    bot.save_completed_update(store.get_user(123), "# Форум-апдейт — Ещё новее\n\n- Дата форума: 06.11.2026")
+    asyncio.run(bot.handle_update_date(None, store.get_user(123), "06.11.26"))
+    assert "Свежий другой ответ" in replies[-1][0]
+    assert "Старый ответ" not in replies[-1][0] and "Секрет" not in replies[-1][0]
+
+
+def test_new_update_group_buttons_use_only_own_groups_and_reject_stale_choices(interview, monkeypatch):
+    store, _, replies = interview
+    user = store.get_user(123)
+    classic = {**user, "forum_group": "Другой <форум>", "methodology": bot.METHODOLOGY_CLASSIC}
+    bot.save_completed_update(user, bot.build_update_markdown(classic, {}))
+    bot.save_completed_update(store.get_user(456), "# Форум-апдейт — Приватная группа")
+    asyncio.run(bot.run_menu_action("updates.new", None, None, store.get_user(123)))
+    buttons = [row[0] for row in replies[-1][1].inline_keyboard]
+    assert [button.text for button in buttons] == ["Мой форум", "Другой <форум>", "Отмена"]
+    old_choice = buttons[1].callback_data
+    asyncio.run(bot.choose_update_group(None, store.get_user(123)))
+    before = store.get_user(123)
+    asyncio.run(bot.handle_update_group(None, before, old_choice))
+    assert store.get_user(123)["flow_payload"] == before["flow_payload"]
+    assert "неактуальна" in replies[-1][0]
+    choice_id = store.payload(before)["group_choice_id"]
+    asyncio.run(bot.handle_update_group(None, before, f"update:group:{choice_id}:-1"))
+    assert store.get_user(123)["state"] == "update:group"
+    monkeypatch.setattr(store, "ensure_user", lambda update: store.get_user(123))
+    async def answer():
+        pass
+    update = SimpleNamespace(callback_query=SimpleNamespace(data=f"update:group:{choice_id}:1", answer=answer))
+    asyncio.run(bot.handle_callback(update, None))
+    user = store.get_user(123)
+    assert user["forum_group"] == "Другой <форум>"
+    assert user["methodology"] == bot.METHODOLOGY_CLASSIC
+    assert user["state"] == "update:date"
+    before = user["flow_payload"]
+    asyncio.run(bot.handle_callback(update, None))
+    assert store.get_user(123)["flow_payload"] == before
+
+
+def test_today_default_and_fill_date_are_separate_from_reminder_with_stale_button_guard(interview, monkeypatch):
+    store, _, replies = interview
+    today = bot.datetime.now(bot.TZ).date()
+    asyncio.run(bot.begin_update_flow(None, store.get_user(123)))
+    button = replies[-1][1].inline_keyboard[0][0]
+    assert today.strftime("%d.%m.%Y") in button.text
+    assert "Дата заполнения" in replies[-1][0]
+    monkeypatch.setattr(store, "ensure_user", lambda update: store.get_user(123))
+    async def answer():
+        pass
+    update = SimpleNamespace(callback_query=SimpleNamespace(data=button.callback_data, answer=answer))
+    asyncio.run(bot.handle_callback(update, None))
+    user = store.get_user(123)
+    assert store.payload(user)["forum_date"] == store.payload(user)["filled_date"] == today.isoformat()
+    assert user["next_forum_date"] == "2026-10-01"
+    assert f"- Дата заполнения: {today.strftime('%d.%m.%Y')}" in bot.build_update_markdown(user, {})
+    asyncio.run(bot.begin_update_flow(None, user))
+    before = store.get_user(123)
+    asyncio.run(bot.handle_callback(update, None))
+    assert store.get_user(123)["flow_payload"] == before["flow_payload"]
+    assert store.get_user(123)["state"] == "update:date"
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_start_offers_new_update_without_resetting_profile_or_draft(interview, monkeypatch, configured):
+    store, _, replies = interview
+    if not configured:
+        store.update_user(123, keep_files=None, next_forum_date=None)
+    store.set_flow(123, "update", 4, {"answers": {"rating_Моё дело": "8/10"}})
+    before = store.get_user(123)
+    monkeypatch.setattr(store, "ensure_user", lambda update: store.get_user(123))
+    asyncio.run(bot.cmd_start(None, SimpleNamespace(args=[])))
+    assert replies[-1][1].inline_keyboard[0][0].callback_data == "update:new"
+    after = store.get_user(123)
+    assert after["active_step"] == 4 and after["flow_payload"] == before["flow_payload"]
+    if not configured:
+        asyncio.run(bot.run_menu_action("updates.new", None, None, after))
+        assert store.get_user(123)["state"] == "onboarding:methodology"

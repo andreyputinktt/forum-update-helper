@@ -933,7 +933,7 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
 
 
 def onboarding_finished_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Апдейты", callback_data="updates:menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Новый апдейт", callback_data="update:new")]])
 
 
 def info_inline_keyboard() -> InlineKeyboardMarkup:
@@ -1292,8 +1292,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         if await handle_start_payload(update, context, user, payload):
             return
-    await reply(update, "Обновил меню. Сейчас пройдём блок настроек.", reply_markup=MAIN_KEYBOARD)
-    await start_onboarding(update, context, user)
+    await reply(update, "<b>Forum Update Helper Bot</b>\n\nПодготовим новый апдейт?", reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("Новый апдейт", callback_data="update:new")],
+        [InlineKeyboardButton("Настройки", callback_data="start:settings")],
+        [InlineKeyboardButton("Меню", callback_data="menu:root")],
+    ]))
 
 
 async def handle_start_payload(
@@ -1402,7 +1405,7 @@ async def run_menu_action(
     if action == "updates.new":
         if not await require_profile_settings(update, context, fresh):
             return
-        await begin_update_flow(update, fresh, edit_previous=False)
+        await choose_update_group(update, fresh)
         return
     if action == "updates.edit":
         if not await require_profile_settings(update, context, fresh):
@@ -1646,7 +1649,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await ask_update_date(update, user)
         return
 
-    if data.startswith("club:"):
+    if data == "start:settings":
+        await start_onboarding(update, context, user)
+    elif data.startswith("update:group:"):
+        await handle_update_group(update, user, data)
+    elif data.startswith("update:date:"):
+        payload = store.payload(user)
+        if user.get("state") != "update:date" or data.rsplit(":", 1)[1] != payload.get("date_choice_id"):
+            await reply(update, "Эта кнопка даты уже неактуальна. Продолжаем текущий шаг.")
+            return
+        await handle_update_date(update, user, payload["default_forum_date"])
+    elif data.startswith("club:"):
         await handle_onboarding_text(update, context, data.split(":", 1)[1])
     elif data.startswith("onboard:"):
         await handle_onboarding_keep(update, context, data.split(":", 2)[1])
@@ -1787,6 +1800,10 @@ async def route_text(
 
     if user.get("state") == "update:date":
         await handle_update_date(update, user, text)
+        return
+
+    if user.get("state") == "update:group":
+        await reply(update, "Выбери форум-группу кнопкой выше. Новое название можно указать в личном кабинете.")
         return
 
     if user.get("state") == "diary:prompt":
@@ -3255,18 +3272,33 @@ def parse_update_markdown_answers(markdown: str, questions: list[Question]) -> d
     return answers
 
 
-def previous_update_context(user: dict[str, Any]) -> dict[str, Any]:
-    group = str(user.get("forum_group") or "").strip()
-    for item in stored_update_items(user):
+def completed_update_contexts(user: dict[str, Any]) -> list[dict[str, Any]]:
+    items = stored_update_items(user)
+    items.sort(key=lambda item: (parse_forum_date(item.get("forum_date") or "", prefer_future=False)
+                                or parse_forum_date(item["date"], prefer_future=False) or date.min), reverse=True)
+    contexts = []
+    for item in items:
         selected = latest_update_markdown(user, item["selector"])
         if not selected:
             continue
         markdown, filename = selected
-        if group and markdown.splitlines()[0].strip() != f"# Форум-апдейт — {group}":
+        title = markdown.splitlines()[0].strip()
+        if not title.startswith("# Форум-апдейт — "):
             continue
         answers = parse_update_markdown_answers(markdown, UPDATE_QUESTIONS + CLASSIC_UPDATE_QUESTIONS + UNIFIED_UPDATE_QUESTIONS)
         answers = compatible_update_answers(answers)
-        return {"answers": answers, "filename": filename, "date": item.get("forum_date") or item["date"]}
+        contexts.append({"answers": answers, "filename": filename, "date": item.get("forum_date") or item["date"],
+                         "group": title.removeprefix("# Форум-апдейт — ").strip(),
+                         "methodology": methodology_from_update_markdown(markdown)})
+    return contexts
+
+
+def previous_update_context(user: dict[str, Any], *, other_group: bool = False) -> dict[str, Any]:
+    group = str(user.get("forum_group") or "").strip().casefold()
+    for previous in completed_update_contexts(user):
+        same_group = previous["group"].casefold() == group
+        if (other_group and not same_group) or (not other_group and same_group):
+            return previous
     return {"answers": {}, "filename": "", "date": ""}
 
 
@@ -3286,15 +3318,19 @@ def compatible_update_answers(answers: dict[str, Any]) -> dict[str, Any]:
 
 
 def previous_question_hint(question: Question, payload: dict[str, Any]) -> str:
-    previous = payload.get("previous_update") or {}
-    answers = previous.get("answers") or {}
-    answer = str(answers.get(question.key) or "")
-    title = f"Прошлый апдейт · {previous.get('date')}" if previous.get("date") else "Прошлый апдейт"
-    parts = [f"<b>{esc(title)}</b>", f"<blockquote>{escaped_excerpt(answer, 600)}</blockquote>" if answer else "По этому вопросу прошлого ответа нет."]
-    if question.key.startswith("retrospective_"):
-        plan = answers.get(question.key.replace("retrospective_", "next_period_", 1))
-        if plan:
-            parts.extend(["<b>Что планировал к этому форуму</b>", f"<blockquote>{escaped_excerpt(plan, 350)}</blockquote>"])
+    parts = []
+    for key, label in (("previous_update", "Прошлый апдейт этой группы"), ("other_previous_update", "Последний апдейт другой группы")):
+        previous = payload.get(key) or {}
+        if key == "other_previous_update" and not previous.get("filename"):
+            continue
+        answers = previous.get("answers") or {}
+        answer = str(answers.get(question.key) or "")
+        title = " · ".join(str(value) for value in (label, previous.get("group"), previous.get("date")) if value)
+        parts.extend([f"<b>{esc(title)}</b>", f"<blockquote>{escaped_excerpt(answer, 600)}</blockquote>" if answer else "По этому вопросу прошлого ответа нет."])
+        if question.key.startswith("retrospective_"):
+            plan = answers.get(question.key.replace("retrospective_", "next_period_", 1))
+            if plan:
+                parts.extend(["<b>Что планировал к этому форуму</b>", f"<blockquote>{escaped_excerpt(plan, 350)}</blockquote>"])
     return "\n".join(parts)
 
 
@@ -3643,6 +3679,39 @@ async def start_update_flow(update: Update, user: dict[str, Any]) -> None:
     )
 
 
+async def choose_update_group(update: Update, user: dict[str, Any]) -> None:
+    groups = []
+    current = str(user.get("forum_group") or "").strip()
+    if current:
+        groups.append({"group": current, "methodology": methodology_for_user(user)})
+    for previous in completed_update_contexts(user):
+        if previous["group"] and not any(group["group"].casefold() == previous["group"].casefold() for group in groups):
+            groups.append({"group": previous["group"], "methodology": previous["methodology"]})
+    if not groups:
+        await begin_update_flow(update, user)
+        return
+    choice_id = uuid4().hex[:12]
+    store.set_flow(user["telegram_user_id"], None, payload={"groups": groups, "group_choice_id": choice_id})
+    store.update_user(user["telegram_user_id"], state="update:group")
+    rows = [[InlineKeyboardButton(group["group"], callback_data=f"update:group:{choice_id}:{index}")] for index, group in enumerate(groups)]
+    rows.append([InlineKeyboardButton("Отмена", callback_data="flow:cancel")])
+    await reply(update, "<b>Для какой форум-группы готовим новый апдейт?</b>", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def handle_update_group(update: Update, user: dict[str, Any], data: str) -> None:
+    payload = store.payload(user)
+    parts = data.split(":")
+    if (user.get("state") != "update:group" or len(parts) != 4
+            or parts[2] != payload.get("group_choice_id") or not parts[3].isdigit()
+            or int(parts[3]) >= len(payload.get("groups", []))):
+        await reply(update, "Эта кнопка группы уже неактуальна. Нажми «Новый апдейт», чтобы выбрать группу.")
+        return
+    group = payload["groups"][int(parts[3])]
+    user = store.update_user(user["telegram_user_id"], forum_group=group["group"],
+                             methodology=group.get("methodology") or methodology_for_user(user))
+    await begin_update_flow(update, user)
+
+
 async def begin_update_flow(
     update: Update,
     user: dict[str, Any],
@@ -3687,6 +3756,9 @@ async def begin_update_flow(
     user = store.set_flow(user["telegram_user_id"], "update", 0, {
         "answers": answers, "mode": mode, "interview_version": 2,
         "previous_update": previous_update_context(user),
+        "other_previous_update": previous_update_context(user, other_group=True),
+        "default_forum_date": datetime.now(TZ).date().isoformat(),
+        "date_choice_id": uuid4().hex[:12],
     })
     await reply(
         update,
@@ -3696,7 +3768,8 @@ async def begin_update_flow(
         "В вопросах с оценкой просто нажми кнопку 1-10. "
         "В текстовых вопросах я не перейду дальше, пока ты не нажмёшь ➡️. "
         "Можно оставить текстовый вопрос без ответа и просто нажать ➡️. "
-        "Под вопросами будут ответы прошлого форума. В конце — до трёх уточнений ментора; их можно пропустить. "
+        "Под вопросами будут ответы последнего форума этой группы и самого свежего форума другой группы. "
+        "В конце — до трёх уточнений ментора; их можно пропустить. "
         "Затем соберу Markdown-файл апдейта. На время сценария нижнее меню скрыто, "
         "чтобы его кнопки не попадали в ответы.",
         reply_markup=ReplyKeyboardRemove(),
@@ -3706,12 +3779,21 @@ async def begin_update_flow(
 
 
 async def ask_update_date(update: Update, user: dict[str, Any]) -> None:
+    payload = store.payload(user)
+    if "date_choice_id" not in payload:
+        payload.update(default_forum_date=datetime.now(TZ).date().isoformat(), date_choice_id=uuid4().hex[:12])
+        store.update_user(user["telegram_user_id"], flow_payload=json.dumps(payload, ensure_ascii=False))
+    default_date = format_forum_date(payload["default_forum_date"])
     await reply(
         update,
         "<b>На какую дату форума готовим этот апдейт?</b>\n\n"
-        "Напиши дату, например <code>20.10.2026</code>, или скажи голосом. "
-        "Можно указать прошедшую дату. Это дата апдейта, а не следующего напоминания.",
-        reply_markup=cancel_keyboard(),
+        f"По умолчанию — <b>{default_date}</b>. Дата заполнения — <b>{datetime.now(TZ).strftime('%d.%m.%Y')}</b>.\n"
+        "Подтверди кнопкой или напиши другую дату текстом/голосом. Можно указать прошедшую дату. "
+        "Дата следующего напоминания задаётся отдельно.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Дата форума: {default_date}", callback_data=f"update:date:{payload['date_choice_id']}")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
     )
 
 
@@ -3722,6 +3804,7 @@ async def handle_update_date(update: Update, user: dict[str, Any], text: str) ->
         return
     payload = store.payload(user)
     payload["forum_date"] = forum_date.isoformat()
+    payload["filled_date"] = datetime.now(TZ).date().isoformat()
     user = store.update_user(user["telegram_user_id"], state=None, flow_payload=json.dumps(payload, ensure_ascii=False))
     await reply(update, f"Дата этого апдейта: <b>{forum_date.strftime('%d.%m.%Y')}</b>.")
     await ask_current_question(update, user, update_questions_for_user(user))
@@ -3831,8 +3914,11 @@ async def ask_current_question(
     payload = store.payload(user)
     answers = payload.setdefault("answers", {})
     is_update = user.get("active_flow") in {"update", "update_extra"}
-    if is_update and "previous_update" not in payload:
-        payload["previous_update"] = previous_update_context(user)
+    if is_update and ("previous_update" not in payload or "other_previous_update" not in payload):
+        if "previous_update" not in payload:
+            payload["previous_update"] = previous_update_context(user)
+        if "other_previous_update" not in payload:
+            payload["other_previous_update"] = previous_update_context(user, other_group=True)
         store.update_user(user["telegram_user_id"], flow_payload=json.dumps(payload, ensure_ascii=False))
     store.update_user(user["telegram_user_id"], state=None)
     text = question_message(question, step, len(questions), str(answers.get(question.key) or ""))
@@ -4157,6 +4243,7 @@ def build_update_markdown(
         f"- Бизнес-клуб: {user.get('business_club') or ''}",
         f"- Методика: {methodology}",
         f"- Дата форума: {forum_date}",
+        f"- Дата заполнения: {format_forum_date(store.payload(user).get('filled_date') or datetime.now(TZ).date())}",
         f"- Создано: {datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
         "",
     ]

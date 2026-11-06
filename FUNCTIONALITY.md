@@ -47,6 +47,13 @@ Owner snapshot exports go to about-aputin/sources/forum-updates. Replaced snapsh
 ### Telegram-native menu
 - User opens menu
 - User opens a submenu
+- `/start` offers “Новый апдейт” immediately and a separate settings entry;
+  it does not restart onboarding for a configured user. New users still
+  complete required settings before preparing an update.
+- Starting a new update shows buttons for every forum group in the user's
+  profile and saved update history. Selecting one makes it the current group;
+  a historical group's latest saved methodology is reused when available. Other users' history
+  is never consulted. Stale group/date buttons cannot replace an active draft.
 
 ### Message pacing
 - Bot sends consecutive messages
@@ -95,12 +102,18 @@ Owner snapshot exports go to about-aputin/sources/forum-updates. Replaced snapsh
   from the group. Events ask for facts, personal importance and feelings.
   Ratings, events and the request are reused for a traditional forum overview;
   the user does not fill two questionnaires.
-- Each question displays a short, dated excerpt from the last completed update
-  of the same forum group, or explicitly says that there is no previous answer.
+- Each question displays short, dated excerpts from the latest completed update
+  of the same forum group and the latest update from any other group, ordered
+  by forum date (save date when absent). Each source names its group; absent
+  answers are explicit. Both sources are frozen when the interview starts.
   Retrospectives additionally recall the previous next-period plan. This source
   is frozen when the interview starts and is not copied into new answers.
   Users may explicitly reuse the displayed previous answer or clear a current
   answer; text and voice fragments remain supported. Skipping is explicit.
+- The update's forum date defaults to today in the configured timezone, offered
+  as a confirmation button. Text/voice can specify another date, including a
+  past date. The date of filling is today and remains separate from the forum
+  date and the next-forum reminder setting.
 - After the questionnaire the mentor asks at most three adaptive, single
   questions about concrete events, feelings, personal meaning, tension and the
   key forum request. Each next question uses the actual preceding reply.

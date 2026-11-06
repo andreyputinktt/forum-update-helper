@@ -508,8 +508,8 @@ def test_diary_reminder_keyboard_has_onboarding_choices():
 def test_onboarding_finished_keyboard_has_single_prepare_action():
     buttons = [button for row in bot.onboarding_finished_keyboard().inline_keyboard for button in row]
 
-    assert [button.text for button in buttons] == ["Апдейты"]
-    assert [button.callback_data for button in buttons] == ["updates:menu"]
+    assert [button.text for button in buttons] == ["Новый апдейт"]
+    assert [button.callback_data for button in buttons] == ["update:new"]
 
 
 def test_main_menu_uses_high_level_submenus():
