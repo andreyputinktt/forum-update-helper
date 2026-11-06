@@ -3317,14 +3317,23 @@ def compatible_update_answers(answers: dict[str, Any]) -> dict[str, Any]:
     return answers
 
 
+def previous_update_sources(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    sources = [("previous_update", payload.get("previous_update") or {})]
+    if (payload.get("other_previous_update") or {}).get("filename"):
+        sources.append(("other_previous_update", payload["other_previous_update"]))
+    return sorted(sources, key=lambda item: parse_forum_date(item[1].get("date") or "", prefer_future=False) or date.min, reverse=True)
+
+
 def previous_question_hint(question: Question, payload: dict[str, Any]) -> str:
     parts = []
-    for key, label in (("previous_update", "Прошлый апдейт этой группы"), ("other_previous_update", "Последний апдейт другой группы")):
-        previous = payload.get(key) or {}
-        if key == "other_previous_update" and not previous.get("filename"):
-            continue
+    for index, (key, previous) in enumerate(previous_update_sources(payload)):
+        label = "Прошлый апдейт этой группы" if key == "previous_update" else "Прошлый апдейт другой группы"
+        if index == 0 and previous.get("date"):
+            label = "Последний твой апдейт"
         answers = previous.get("answers") or {}
         answer = str(answers.get(question.key) or "")
+        if question.key == "main_request_core" and not answer:
+            answer = str(answers.get("classic_main_question") or "")
         title = " · ".join(str(value) for value in (label, previous.get("group"), previous.get("date")) if value)
         parts.extend([f"<b>{esc(title)}</b>", f"<blockquote>{escaped_excerpt(answer, 600)}</blockquote>" if answer else "По этому вопросу прошлого ответа нет."])
         if question.key.startswith("retrospective_"):
@@ -3927,8 +3936,10 @@ async def ask_current_question(
         text += "\n\n" + previous_question_hint(question, payload)
         rows = [list(row) for row in keyboard.inline_keyboard]
         rows.append([InlineKeyboardButton("Пропустить →", callback_data="flow:next")])
-        if (payload.get("previous_update", {}).get("answers", {})).get(question.key):
-            rows.append([InlineKeyboardButton("Оставить как в прошлом", callback_data=f"flow:reuse:{step}")])
+        for source, previous in previous_update_sources(payload):
+            if previous.get("answers", {}).get(question.key):
+                label = " · ".join(str(value) for value in ("Взять ответ", previous.get("date"), previous.get("group") or "эта группа") if value)
+                rows.append([InlineKeyboardButton(label, callback_data=f"flow:reuse:{source}:{step}")])
         if answers.get(question.key):
             rows.append([InlineKeyboardButton("Заменить ответ", callback_data=f"flow:clear:{step}")])
         keyboard = InlineKeyboardMarkup(rows)
@@ -3953,7 +3964,11 @@ async def change_question_answer(update: Update, context: ContextTypes.DEFAULT_T
     payload = store.payload(user)
     answers = payload.setdefault("answers", {})
     if data.startswith("flow:reuse:"):
-        previous = payload.get("previous_update", {}).get("answers", {}).get(key)
+        parts = data.split(":")
+        source = parts[2] if len(parts) == 4 else "previous_update"
+        if source not in {"previous_update", "other_previous_update"}:
+            return
+        previous = payload.get(source, {}).get("answers", {}).get(key)
         if not previous:
             return
         answers[key] = previous
@@ -4030,9 +4045,8 @@ async def ask_mentor_question(update: Update, user: dict[str, Any]) -> None:
     question = await generate_mentor_question(user, payload)
     dialogue.append({"question": question, "answer": ""})
     user = store.update_user(user["telegram_user_id"], flow_payload=json.dumps(payload, ensure_ascii=False), active_step=len(dialogue) - 1)
-    previous = payload.get("previous_update", {})
-    previous_request = previous.get("answers", {}).get("main_request_core") or previous.get("answers", {}).get("classic_main_question")
-    hint = f"\n\n<b>Прошлый запрос · {esc(previous.get('date'))}</b>\n<blockquote>{esc(clip(str(previous_request), 450))}</blockquote>" if previous_request else "\n\nПрошлого запроса для сравнения нет."
+    request_question = next(question for question in UNIFIED_UPDATE_QUESTIONS if question.key == "main_request_core")
+    hint = "\n\n" + previous_question_hint(request_question, payload)
     await reply(update, f"<b>Ментор · {len(dialogue)}/{MENTOR_LIMIT}</b>\n\n{esc(question)}{hint}", reply_markup=mentor_keyboard(len(dialogue) - 1))
 
 

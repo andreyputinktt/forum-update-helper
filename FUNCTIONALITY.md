@@ -106,6 +106,9 @@ Owner snapshot exports go to about-aputin/sources/forum-updates. Replaced snapsh
   of the same forum group and the latest update from any other group, ordered
   by forum date (save date when absent). Each source names its group; absent
   answers are explicit. Both sources are frozen when the interview starts.
+  Display the user's newest source first, even when it belongs to another
+  group; the current group's older source follows. Reuse buttons explicitly
+  identify the source and date so an older answer cannot be copied by mistake.
   Retrospectives additionally recall the previous next-period plan. This source
   is frozen when the interview starts and is not copied into new answers.
   Users may explicitly reuse the displayed previous answer or clear a current

@@ -80,6 +80,39 @@ def test_reuse_clear_and_stale_question_buttons(interview):
     assert store.payload(store.get_user(123))["answers"] == {}
 
 
+@pytest.mark.parametrize("latest_is_other", [True, False])
+def test_newest_personal_update_comes_first_and_reuse_uses_its_named_source(interview, latest_is_other):
+    store, _, replies = interview
+    newer, older = "20.10.2026", "07.09.2026"
+    payload = {
+        "interview_version": 2, "answers": {},
+        "previous_update": {"answers": {"rating_Моё дело": "Свой ответ"}, "date": older if latest_is_other else newer, "group": "Точка Сборки", "filename": "own.md"},
+        "other_previous_update": {"answers": {"rating_Моё дело": "Ответ Volo"}, "date": newer if latest_is_other else older, "group": "Volo", "filename": "other.md"},
+    }
+    user = store.set_flow(123, "update", 0, payload)
+    asyncio.run(bot.ask_current_question(None, user, bot.UNIFIED_UPDATE_QUESTIONS))
+    text, keyboard = replies[-1]
+    assert text.index(newer) < text.index(older)
+    assert "Последний твой апдейт" in text
+    reuse = [button for row in keyboard.inline_keyboard for button in row if button.callback_data.startswith("flow:reuse:")]
+    assert len(reuse) == 2 and newer in reuse[0].text and older in reuse[1].text
+    asyncio.run(bot.change_question_answer(None, None, store.get_user(123), reuse[0].callback_data))
+    assert store.payload(store.get_user(123))["answers"]["rating_Моё дело"] == ("Ответ Volo" if latest_is_other else "Свой ответ")
+    asyncio.run(bot.change_question_answer(None, None, store.get_user(123), reuse[1].callback_data))
+    assert store.payload(store.get_user(123))["answers"]["rating_Моё дело"] == ("Свой ответ" if latest_is_other else "Ответ Volo")
+
+
+def test_mentor_shows_newest_personal_request_first_without_replacing_frozen_sources(interview):
+    store, _, replies = interview
+    payload = {"answers": {}, "previous_update": {"answers": {"classic_main_question": "Старый запрос"}, "date": "07.09.2026", "filename": "old.md"},
+               "other_previous_update": {"answers": {"main_request_core": "Свежий запрос"}, "date": "20.10.2026", "group": "Volo", "filename": "new.md"}}
+    user = store.set_flow(123, "update_mentor", 0, payload)
+    asyncio.run(bot.ask_mentor_question(None, user))
+    text = replies[-1][0]
+    assert text.index("Свежий запрос") < text.index("Старый запрос")
+    assert store.payload(store.get_user(123))["previous_update"] == payload["previous_update"]
+
+
 def test_legacy_draft_keeps_order_then_collects_missing_events(interview):
     store, _, _ = interview
     user = store.set_flow(123, "update", 8, {"answers": {"main_request_money": "100 рублей"}})
